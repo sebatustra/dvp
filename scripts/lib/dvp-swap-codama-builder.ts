@@ -1,5 +1,8 @@
 import { Codama, createFromJson } from "codama";
-import { setInstructionAccountDefaultValues } from "./updates";
+import {
+  setFixedAccountOptionFields,
+  setInstructionAccountDefaultValues,
+} from "./updates";
 
 export class DvpSwapCodamaBuilder {
   private codama: Codama;
@@ -12,6 +15,11 @@ export class DvpSwapCodamaBuilder {
 
   setInstructionAccountDefaultValues(): this {
     this.codama = setInstructionAccountDefaultValues(this.codama);
+    return this;
+  }
+
+  setFixedAccountOptionFields(): this {
+    this.codama = setFixedAccountOptionFields(this.codama);
     return this;
   }
 

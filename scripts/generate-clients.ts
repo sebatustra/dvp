@@ -20,6 +20,7 @@ const typescriptClientsDir = path.join(
 
 const dvpSwapCodama = createDvpSwapCodamaBuilder(dvpSwapIdl)
   .setInstructionAccountDefaultValues()
+  .setFixedAccountOptionFields()
   .build();
 
 const configPreserver = preserveConfigFiles(

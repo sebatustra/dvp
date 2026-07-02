@@ -1,0 +1,132 @@
+/**
+ * Regression tests: the SwapDvp account codec must mirror the
+ * fixed-width on-chain layout (SwapDvp::LEN == 394), where
+ * `earliestSettlementTimestamp` always occupies 1 tag byte + 8 payload
+ * bytes (the payload after a `0` tag is an ignored sentinel).
+ */
+import { describe, expect, it } from "@jest/globals";
+import { getAddressDecoder, type ReadonlyUint8Array } from "@solana/kit";
+import {
+  getSwapDvpDecoder,
+  getSwapDvpEncoder,
+} from "../generated/accounts/swapDvp";
+
+export const SWAP_DVP_ACCOUNT_SIZE = 394;
+
+const addressOf = (fill: number) =>
+  getAddressDecoder().decode(new Uint8Array(32).fill(fill));
+
+const u64le = (value: bigint) => {
+  const bytes = new Uint8Array(8);
+  new DataView(bytes.buffer).setBigUint64(0, BigInt.asUintN(64, value), true);
+  return bytes;
+};
+
+/**
+ * Builds SwapDvp account bytes exactly as the on-chain `to_bytes` does.
+ * `earliest` semantics: `undefined` = None (tag 0 + i64::MAX sentinel,
+ * the real on-chain encoding), a bigint = Some(tag 1 + value).
+ */
+function onChainBytes(earliest?: bigint): Uint8Array {
+  const bytes: number[] = [];
+  bytes.push(254); // bump
+  for (const fill of [1, 2, 3, 4, 5, 6, 7]) {
+    bytes.push(...new Uint8Array(32).fill(fill)); // pubkeys
+  }
+  bytes.push(...u64le(1_000n)); // amount_a
+  bytes.push(...u64le(2_500n)); // amount_b
+  bytes.push(...u64le(1_780_000_000n)); // expiry_timestamp
+  bytes.push(...u64le(42n)); // nonce
+  bytes.push(...new Uint8Array(64).fill(8)); // ref_string
+  bytes.push(...new Uint8Array(32).fill(9)); // user_a_settlement_destination
+  bytes.push(...new Uint8Array(32).fill(10)); // user_b_settlement_destination
+  if (earliest === undefined) {
+    bytes.push(0);
+    bytes.push(...u64le(0x7fffffffffffffffn)); // i64::MAX sentinel
+  } else {
+    bytes.push(1);
+    bytes.push(...u64le(earliest));
+  }
+  return new Uint8Array(bytes);
+}
+
+/** The 386-byte forgery: None as a lone `0` tag. */
+function shortForgedBytes(): Uint8Array {
+  const full = onChainBytes();
+  return full.slice(0, full.length - 8);
+}
+
+const decode = (bytes: ReadonlyUint8Array) => getSwapDvpDecoder().decode(bytes);
+
+const baseArgs = {
+  bump: 254,
+  userA: addressOf(1),
+  userB: addressOf(2),
+  mintA: addressOf(3),
+  mintB: addressOf(4),
+  settlementAuthority: addressOf(5),
+  tokenProgramA: addressOf(6),
+  tokenProgramB: addressOf(7),
+  amountA: 1_000n,
+  amountB: 2_500n,
+  expiryTimestamp: 1_780_000_000n,
+  nonce: 42n,
+  refString: Array.from(new Uint8Array(64).fill(8)),
+  userASettlementDestination: addressOf(9),
+  userBSettlementDestination: addressOf(10),
+};
+
+describe("SwapDvp account codec", () => {
+  it("rejects the 386-byte short-None forgery", () => {
+    const forged = shortForgedBytes();
+    expect(forged.length).toBe(386);
+    expect(() => decode(forged)).toThrow();
+  });
+
+  it("decodes the genuine on-chain None encoding (tag 0 + sentinel)", () => {
+    const bytes = onChainBytes();
+    expect(bytes.length).toBe(SWAP_DVP_ACCOUNT_SIZE);
+    const decoded = decode(bytes);
+    expect(decoded.earliestSettlementTimestamp).toEqual({ __option: "None" });
+    expect(decoded.userA).toBe(addressOf(1));
+    expect(decoded.settlementAuthority).toBe(addressOf(5));
+    expect(decoded.amountA).toBe(1_000n);
+    expect(decoded.amountB).toBe(2_500n);
+    expect(decoded.nonce).toBe(42n);
+    expect(decoded.userBSettlementDestination).toBe(addressOf(10));
+  });
+
+  it("decodes the genuine on-chain Some encoding", () => {
+    const decoded = decode(onChainBytes(1_770_000_000n));
+    expect(decoded.earliestSettlementTimestamp).toEqual({
+      __option: "Some",
+      value: 1_770_000_000n,
+    });
+  });
+
+  it("always encodes to the fixed on-chain size, None or Some", () => {
+    const encoder = getSwapDvpEncoder();
+    const noneBytes = encoder.encode({
+      ...baseArgs,
+      earliestSettlementTimestamp: null,
+    });
+    const someBytes = encoder.encode({
+      ...baseArgs,
+      earliestSettlementTimestamp: 1_770_000_000n,
+    });
+    expect(noneBytes.length).toBe(SWAP_DVP_ACCOUNT_SIZE);
+    expect(someBytes.length).toBe(SWAP_DVP_ACCOUNT_SIZE);
+  });
+
+  it("round-trips Some through encode/decode", () => {
+    const encoded = getSwapDvpEncoder().encode({
+      ...baseArgs,
+      earliestSettlementTimestamp: 1_770_000_000n,
+    });
+    const decoded = decode(encoded);
+    expect(decoded).toMatchObject({
+      ...baseArgs,
+      earliestSettlementTimestamp: { __option: "Some", value: 1_770_000_000n },
+    });
+  });
+});
