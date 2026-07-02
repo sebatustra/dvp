@@ -51,6 +51,13 @@ const textEncoder = new TextEncoder();
  * Decodes a fetched account as a `SwapDvp`, rejecting it unless it is owned
  * by the DvP program and exactly the on-chain size. Use instead of the
  * generated `decodeSwapDvp`. Throws if the account does not exist.
+ *
+ * This does NOT verify the account sits at its canonical PDA (PDA derivation
+ * is async in kit). When checking a counterparty-supplied address before
+ * funding, use `verifySwapDvp`, which adds the PDA check, or derive the
+ * address with `findSwapDvpPda` and compare it yourself. The Rust
+ * `verify::decode_swap_dvp_account` bundles all three checks because it takes
+ * the expected address and derives the PDA synchronously.
  */
 export function decodeSwapDvpChecked<TAddress extends string = string>(
   encodedAccount: EncodedAccount<TAddress> | MaybeEncodedAccount<TAddress>,

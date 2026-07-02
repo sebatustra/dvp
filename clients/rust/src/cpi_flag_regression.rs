@@ -13,15 +13,23 @@ const REJECT: &str = include_str!("generated/instructions/reject_dvp.rs");
 const CREATE: &str = include_str!("generated/instructions/create_dvp.rs");
 
 fn assert_correct_flag_order(name: &str, src: &str) {
+    // Security invariant: the buggy mapping (`.1` read as is_signer) must
+    // never appear, in any instruction.
     assert!(
         !src.contains("is_signer: remaining_account.1,"),
         "{name}: buggy CPI remaining-account flag mapping (`.1` read as is_signer)"
     );
-    assert!(
-        src.contains("is_writable: remaining_account.1,")
-            && src.contains("is_signer: remaining_account.2,"),
-        "{name}: expected `.1` -> is_writable and `.2` -> is_signer"
-    );
+    // For instructions that actually emit remaining-account CPI scaffolding,
+    // confirm the corrected order is present. Skipped otherwise so the test
+    // does not couple to codama emitting that scaffolding for every
+    // instruction.
+    if src.contains("remaining_account.") {
+        assert!(
+            src.contains("is_writable: remaining_account.1,")
+                && src.contains("is_signer: remaining_account.2,"),
+            "{name}: expected `.1` -> is_writable and `.2` -> is_signer"
+        );
+    }
 }
 
 #[test]
