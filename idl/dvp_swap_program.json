@@ -251,6 +251,18 @@
         "kind": "errorNode",
         "message": "ref string exceeds the maximum byte length",
         "name": "refStringTooLong"
+      },
+      {
+        "code": 16,
+        "kind": "errorNode",
+        "message": "DvP is still open; use ReclaimDvp while the trade is live",
+        "name": "dvpStillOpen"
+      },
+      {
+        "code": 17,
+        "kind": "errorNode",
+        "message": "no DvP was ever created with these seeds",
+        "name": "dvpNeverCreated"
       }
     ],
     "instructions": [
@@ -1032,6 +1044,151 @@
         ],
         "kind": "instructionNode",
         "name": "rejectDvp"
+      },
+      {
+        "accounts": [
+          {
+            "docs": [
+              "Depositor of the leg being recovered; must equal the leg's user; receives the closed escrow's rent"
+            ],
+            "isSigner": true,
+            "isWritable": true,
+            "kind": "instructionAccountNode",
+            "name": "signer"
+          },
+          {
+            "docs": [
+              "Closed SwapDvp address, re-derived from the seed args; must be system-owned and empty (signs the CPIs)"
+            ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "swapDvp"
+          },
+          {
+            "docs": [
+              "Nonce tombstone PDA for swap_dvp; must be program-owned"
+            ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "nonceTombstone"
+          },
+          {
+            "docs": [
+              "Mint of the leg being recovered; mint_a if signed by user_a, mint_b if by user_b"
+            ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "mint"
+          },
+          {
+            "docs": [
+              "Recreated escrow ATA for the closed DvP (drained, then closed)"
+            ],
+            "isSigner": false,
+            "isWritable": true,
+            "kind": "instructionAccountNode",
+            "name": "dvpEscrowAta"
+          },
+          {
+            "docs": [
+              "Signer's canonical ATA for the leg's mint"
+            ],
+            "isSigner": false,
+            "isWritable": true,
+            "kind": "instructionAccountNode",
+            "name": "signerDestAta"
+          },
+          {
+            "docs": [
+              "SPL Token or Token-2022 program; must own mint"
+            ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "tokenProgram"
+          },
+          {
+            "docs": [
+              "SPL Memo program; only used if signer_dest_ata requires a memo"
+            ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "memoProgram"
+          }
+        ],
+        "arguments": [
+          {
+            "defaultValue": {
+              "kind": "numberValueNode",
+              "number": 5
+            },
+            "defaultValueStrategy": "omitted",
+            "kind": "instructionArgumentNode",
+            "name": "discriminator",
+            "type": {
+              "endian": "le",
+              "format": "u8",
+              "kind": "numberTypeNode"
+            }
+          },
+          {
+            "kind": "instructionArgumentNode",
+            "name": "settlementAuthority",
+            "type": {
+              "kind": "publicKeyTypeNode"
+            }
+          },
+          {
+            "kind": "instructionArgumentNode",
+            "name": "userA",
+            "type": {
+              "kind": "publicKeyTypeNode"
+            }
+          },
+          {
+            "kind": "instructionArgumentNode",
+            "name": "userB",
+            "type": {
+              "kind": "publicKeyTypeNode"
+            }
+          },
+          {
+            "kind": "instructionArgumentNode",
+            "name": "mintA",
+            "type": {
+              "kind": "publicKeyTypeNode"
+            }
+          },
+          {
+            "kind": "instructionArgumentNode",
+            "name": "mintB",
+            "type": {
+              "kind": "publicKeyTypeNode"
+            }
+          },
+          {
+            "kind": "instructionArgumentNode",
+            "name": "nonce",
+            "type": {
+              "endian": "le",
+              "format": "u64",
+              "kind": "numberTypeNode"
+            }
+          }
+        ],
+        "discriminators": [
+          {
+            "kind": "fieldDiscriminatorNode",
+            "name": "discriminator",
+            "offset": 0
+          }
+        ],
+        "kind": "instructionNode",
+        "name": "recoverDvp"
       }
     ],
     "kind": "programNode",

@@ -78,6 +78,16 @@ pub enum DvpSwapProgramError {
     /// (15) `ref_string` exceeds `MAX_REF_STRING_LEN` bytes.
     #[error("ref string exceeds the maximum byte length")]
     RefStringTooLong,
+
+    /// (16) Recover targets a SwapDvp that is still open (program-owned).
+    /// While the trade is live, ReclaimDvp is the per-leg recovery path.
+    #[error("DvP is still open; use ReclaimDvp while the trade is live")]
+    DvpStillOpen,
+
+    /// (17) Recover's seed inputs derive a SwapDvp address with no nonce
+    /// tombstone, i.e. no DvP was ever created with these exact seeds.
+    #[error("no DvP was ever created with these seeds")]
+    DvpNeverCreated,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

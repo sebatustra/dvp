@@ -9,7 +9,8 @@ use pinocchio::Address as Pubkey;
 /// Lifecycle: Create → fund each leg via raw SPL Transfer to the leg's
 /// escrow ATA → Settle | (Reclaim per leg) | Cancel | Reject. Funding
 /// is intentionally not a program instruction so that custodian
-/// integrations can use a plain SPL Transfer.
+/// integrations can use a plain SPL Transfer. Recover is the post-close
+/// path for deposits that land after the trade is closed.
 /// Discriminator order matches `discriminator::DvpSwapInstructionDiscriminators`.
 ///
 /// Token-2022: every transfer instruction accepts a separate token
@@ -332,4 +333,62 @@ pub enum DvpSwapProgramInstruction {
         /// since that leg's transfer is skipped.
         leg_a_extras_count: u8,
     } = 4,
+
+    /// Permissioned: signer must be the recovered leg's depositor.
+    /// Recovers a deposit that landed in a recreated escrow ATA after
+    /// the SwapDvp was closed. The caller supplies the original seed
+    /// inputs; the program re-derives the PDA, requires its nonce
+    /// tombstone (proof the DvP existed), drains the escrow back to
+    /// the signer, and closes it. Signer selects the leg as in
+    /// Reclaim: user_a recovers mint_a, user_b recovers mint_b.
+    #[codama(account(
+        name = "signer",
+        docs = "Depositor of the leg being recovered; must equal the leg's user; receives the closed escrow's rent",
+        signer,
+        writable
+    ))]
+    #[codama(account(
+        name = "swap_dvp",
+        docs = "Closed SwapDvp address, re-derived from the seed args; must be system-owned and empty (signs the CPIs)"
+    ))]
+    #[codama(account(
+        name = "nonce_tombstone",
+        docs = "Nonce tombstone PDA for swap_dvp; must be program-owned"
+    ))]
+    #[codama(account(
+        name = "mint",
+        docs = "Mint of the leg being recovered; mint_a if signed by user_a, mint_b if by user_b"
+    ))]
+    #[codama(account(
+        name = "dvp_escrow_ata",
+        docs = "Recreated escrow ATA for the closed DvP (drained, then closed)",
+        writable
+    ))]
+    #[codama(account(
+        name = "signer_dest_ata",
+        docs = "Signer's canonical ATA for the leg's mint",
+        writable
+    ))]
+    #[codama(account(
+        name = "token_program",
+        docs = "SPL Token or Token-2022 program; must own mint"
+    ))]
+    #[codama(account(
+        name = "memo_program",
+        docs = "SPL Memo program; only used if signer_dest_ata requires a memo"
+    ))]
+    RecoverDvp {
+        /// Original `settlement_authority` seed input.
+        settlement_authority: Pubkey,
+        /// Original `user_a` seed input.
+        user_a: Pubkey,
+        /// Original `user_b` seed input.
+        user_b: Pubkey,
+        /// Original `mint_a` seed input.
+        mint_a: Pubkey,
+        /// Original `mint_b` seed input.
+        mint_b: Pubkey,
+        /// Original `nonce` seed input.
+        nonce: u64,
+    } = 5,
 }
