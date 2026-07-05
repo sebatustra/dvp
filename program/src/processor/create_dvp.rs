@@ -7,7 +7,9 @@ use crate::{
         verify_system_program, verify_token_program,
     },
     processor::shared::pda_utils::create_pda_account,
-    processor::shared::token_utils::{validate_mint_extensions, verify_canonical_ata},
+    processor::shared::token_utils::{
+        validate_mint_extensions, verify_canonical_ata, verify_escrow_not_preloaded,
+    },
     require, require_len,
     state::swap_dvp::{SwapDvp, MAX_REF_STRING_LEN, NONCE_TOMBSTONE_SEED, SWAP_DVP_SEED},
 };
@@ -226,6 +228,11 @@ pub fn process_create_dvp(
         token_program: token_program_b_info,
     }
     .invoke()?;
+
+    // A non-native escrow must start with no lamports beyond rent, or
+    // the close paths would sweep the excess to the closer (DVP-14).
+    verify_escrow_not_preloaded(dvp_ata_a_info, &rent)?;
+    verify_escrow_not_preloaded(dvp_ata_b_info, &rent)?;
 
     let dvp_data = dvp.to_bytes();
     let mut data_slice = swap_dvp_info.try_borrow_mut()?;

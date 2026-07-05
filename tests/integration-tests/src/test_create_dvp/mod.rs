@@ -7,10 +7,12 @@ use crate::{
         assert_cancel_dvp, assert_create_dvp, setup_dvp, AMOUNT_A, AMOUNT_B, REF_STRING,
     },
     utils::{
-        assert_program_error, get_token_balance, TestContext, EARLIEST_AFTER_EXPIRY,
-        EXPIRY_NOT_IN_FUTURE, EXPIRY_TOO_FAR_IN_FUTURE, NONCE_ALREADY_USED, REF_STRING_TOO_LONG,
-        SAME_MINT, SELF_DVP, SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY,
-        SWAP_PROGRAM_ID, ZERO_AMOUNT,
+        assert_program_error, dvp_ata, get_token_balance, nonce_tombstone_pda, set_mint,
+        set_native_mint, swap_dvp_pda, TestContext, EARLIEST_AFTER_EXPIRY,
+        ESCROW_PRELOADED_WITH_LAMPORTS, EXPIRY_NOT_IN_FUTURE, EXPIRY_TOO_FAR_IN_FUTURE,
+        NATIVE_MINT, NONCE_ALREADY_USED, REF_STRING_TOO_LONG, SAME_MINT, SELF_DVP,
+        SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY, SWAP_PROGRAM_ID,
+        TOKEN_PROGRAM_ID, ZERO_AMOUNT,
     },
 };
 
@@ -376,6 +378,125 @@ fn test_create_dvp_succeeds_when_escrow_ata_was_pre_created() {
     assert!(context.get_account(&fixture.dvp_ata_b).is_some());
     assert_eq!(get_token_balance(&context, &fixture.dvp_ata_a), 0);
     assert_eq!(get_token_balance(&context, &fixture.dvp_ata_b), 0);
+}
+
+/// DVP-14: a non-native escrow holding raw SOL above its rent minimum
+/// must not be adopted. The close paths sweep the escrow's full lamport
+/// balance to the closer, so a party could Reject and pocket the preload.
+#[test]
+fn test_create_dvp_rejects_escrow_preloaded_with_sol() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+
+    let frontrunner = Keypair::new();
+    context.airdrop_if_required(&frontrunner.pubkey(), 1_000_000_000);
+    let pre_create_ix = create_associated_token_account(
+        &frontrunner.pubkey(),
+        &fixture.swap_dvp,
+        &fixture.mint_a,
+        &fixture.token_program_a,
+    );
+    context
+        .send(pre_create_ix, &[&frontrunner])
+        .expect("pre-create dvp_ata_a");
+
+    // The victim's mis-funding: raw SOL onto the non-native escrow.
+    context
+        .svm
+        .airdrop(&fixture.dvp_ata_a, 1_000_000_000)
+        .expect("preload SOL");
+
+    let ix = CreateDvpBuilder::new()
+        .payer(context.payer.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .amount_a(AMOUNT_A)
+        .amount_b(AMOUNT_B)
+        .expiry_timestamp(fixture.expiry)
+        .nonce(fixture.nonce)
+        .ref_string(REF_STRING.to_string())
+        .instruction();
+
+    assert_program_error(context.send(ix, &[]), ESCROW_PRELOADED_WITH_LAMPORTS);
+}
+
+/// The native carve-out for DVP-14: preloaded lamports on a WSOL escrow
+/// are the deposit mechanism (SyncNative adopts them as token balance),
+/// so CreateDvp accepts them.
+#[test]
+fn test_create_dvp_accepts_preloaded_wsol_escrow() {
+    let mut context = TestContext::new();
+    set_native_mint(&mut context);
+
+    let user_a = Keypair::new();
+    let user_b = Keypair::new();
+    let settlement_authority = Keypair::new();
+
+    let mint_a = NATIVE_MINT; // WSOL leg
+    let mint_b = Keypair::new().pubkey();
+    set_mint(&mut context, &mint_b, &TOKEN_PROGRAM_ID);
+
+    let nonce: u64 = 0;
+    let (swap_dvp, _) = swap_dvp_pda(
+        &settlement_authority.pubkey(),
+        &user_a.pubkey(),
+        &user_b.pubkey(),
+        &mint_a,
+        &mint_b,
+        nonce,
+    );
+    let dvp_ata_a = dvp_ata(&swap_dvp, &mint_a, &TOKEN_PROGRAM_ID);
+    let dvp_ata_b = dvp_ata(&swap_dvp, &mint_b, &TOKEN_PROGRAM_ID);
+
+    // Pre-create the WSOL escrow and preload the deposit as raw lamports.
+    let pre_create_ix = create_associated_token_account(
+        &context.payer.pubkey(),
+        &swap_dvp,
+        &mint_a,
+        &TOKEN_PROGRAM_ID,
+    );
+    context
+        .send(pre_create_ix, &[])
+        .expect("pre-create WSOL escrow");
+    let deposit: u64 = 5_000_000;
+    context
+        .svm
+        .airdrop(&dvp_ata_a, deposit)
+        .expect("preload WSOL deposit");
+
+    let ix = CreateDvpBuilder::new()
+        .payer(context.payer.pubkey())
+        .swap_dvp(swap_dvp)
+        .nonce_tombstone(nonce_tombstone_pda(&swap_dvp).0)
+        .mint_a(mint_a)
+        .mint_b(mint_b)
+        .dvp_ata_a(dvp_ata_a)
+        .dvp_ata_b(dvp_ata_b)
+        .token_program_a(TOKEN_PROGRAM_ID)
+        .token_program_b(TOKEN_PROGRAM_ID)
+        .user_a(user_a.pubkey())
+        .user_b(user_b.pubkey())
+        .settlement_authority(settlement_authority.pubkey())
+        .amount_a(deposit)
+        .amount_b(AMOUNT_B)
+        .expiry_timestamp(context.now() + 3600)
+        .nonce(nonce)
+        .ref_string(REF_STRING.to_string())
+        .instruction();
+    context
+        .send(ix, &[])
+        .expect("CreateDvp with preloaded WSOL escrow");
+
+    assert!(context.get_account(&swap_dvp).is_some());
 }
 
 /// The ref string is stored zero-padded, and the account decodes with

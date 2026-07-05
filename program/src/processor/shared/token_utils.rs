@@ -7,6 +7,7 @@ use pinocchio::{
     cpi::{invoke_signed_with_bounds, Signer},
     error::ProgramError,
     instruction::{InstructionAccount, InstructionView},
+    sysvars::rent::Rent,
     ProgramResult,
 };
 use pinocchio_token::{state::Mint as TokenMint, state::TokenAccount, ID as TOKEN_PROGRAM_ID};
@@ -56,6 +57,41 @@ pub fn verify_canonical_ata(
     )
     .0;
     require!(ata_info.address() == &expected, ProgramError::InvalidSeeds);
+    Ok(())
+}
+
+/// Reject a non-native escrow whose lamports exceed the rent-exempt
+/// minimum for its actual size (DVP-14). Raw SOL is invisible to token
+/// accounting on non-WSOL legs, and the close paths sweep the escrow's
+/// full lamport balance to the closer, so a preloaded escrow would let
+/// a party pocket the excess via RejectDvp. Runs after the ATA create
+/// CPI so it catches both a pre-created ATA holding extra SOL and
+/// lamports parked at the address before creation (the ATA program only
+/// tops up the rent shortfall). Native escrows are exempt: excess
+/// lamports there are the WSOL deposit mechanism. SOL sent to a
+/// non-native escrow after creation is out of the program's hands and
+/// still goes to the closer.
+#[inline(always)]
+pub fn verify_escrow_not_preloaded(info: &AccountView, rent: &Rent) -> ProgramResult {
+    let (data_len, is_native) = {
+        let data = info.try_borrow()?;
+        if info.owned_by(&TOKEN_PROGRAM_ID) {
+            let account = unsafe { TokenAccount::from_bytes_unchecked(&data) };
+            (data.len(), account.is_native())
+        } else if info.owned_by(&TOKEN_2022_PROGRAM_ID) {
+            let account = unsafe { Token2022Account::from_bytes_unchecked(&data) };
+            (data.len(), account.is_native())
+        } else {
+            return Err(ProgramError::InvalidAccountOwner);
+        }
+    };
+    if is_native {
+        return Ok(());
+    }
+    require!(
+        info.lamports() == rent.try_minimum_balance(data_len)?,
+        DvpSwapProgramError::EscrowPreloadedWithLamports
+    );
     Ok(())
 }
 

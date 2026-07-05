@@ -88,6 +88,13 @@ pub enum DvpSwapProgramError {
     /// tombstone, i.e. no DvP was ever created with these exact seeds.
     #[error("no DvP was ever created with these seeds")]
     DvpNeverCreated,
+
+    /// (18) A non-native escrow ATA holds lamports above its rent-exempt
+    /// minimum at CreateDvp. Raw SOL is invisible to token accounting on
+    /// non-WSOL legs and the close paths sweep the full lamport balance
+    /// to the closer, so adopting the excess would misdirect it.
+    #[error("escrow ATA preloaded with unexpected lamports")]
+    EscrowPreloadedWithLamports,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

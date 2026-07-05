@@ -68,6 +68,8 @@ pub const NONCE_ALREADY_USED: u32 = DvpSwapProgramError::NonceAlreadyUsed as u32
 pub const REF_STRING_TOO_LONG: u32 = DvpSwapProgramError::RefStringTooLong as u32;
 pub const DVP_STILL_OPEN: u32 = DvpSwapProgramError::DvpStillOpen as u32;
 pub const DVP_NEVER_CREATED: u32 = DvpSwapProgramError::DvpNeverCreated as u32;
+pub const ESCROW_PRELOADED_WITH_LAMPORTS: u32 =
+    DvpSwapProgramError::EscrowPreloadedWithLamports as u32;
 
 const MIN_LAMPORTS: u64 = 500_000_000;
 
