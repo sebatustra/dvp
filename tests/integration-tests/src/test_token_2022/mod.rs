@@ -376,24 +376,26 @@ fn test_create_rejects_mint_program_owner_mismatch_b() {
 }
 
 // ---------------------------------------------------------------------
-// Defense-in-depth removed by design: extension validation runs only at
-// Create. The two tests below pin that behaviour by activating a
-// blocked extension *after* Create and confirming the unwind paths
-// (Settle, Reject) still drain funds — the property the design hinges
-// on so that funds can never get stranded.
+// Extension validation runs at Create AND Settle (DVP-12). The recovery
+// paths (Cancel/Reject/Reclaim/Recover) stay tolerant so a post-Create
+// mint mutation can never strand funds. The tests below pin both halves:
+// Settle re-validates and rejects a leg that gained a blocked extension
+// after Create (then the honest party recovers via Reject), while Reject
+// itself does no extension check.
 // ---------------------------------------------------------------------
 
-/// Create with bare T22 mints, then mutate `mint_a` to bear an
-/// `InterestBearingConfig` extension *after* Create. InterestBearing is
-/// on the deny-list (it would be rejected if Create re-ran) but it does
-/// not affect the raw `TransferChecked` amount path — UI scaling is
-/// applied client-side, the on-chain transfer amount is the raw value.
-///
-/// Settle must still succeed: the unwind paths intentionally skip the
-/// extension check so a post-Create extension activation can never
-/// strand the trade.
+/// DVP-12 regression. The exploit: a party leaves their own leg unfunded
+/// until the counterparty commits, then closes the zero-supply mint and
+/// recreates it at the same address with a deny-listed extension (e.g.
+/// TransferFee, which short-delivers the leg). Settle must re-validate
+/// and reject. This test uses `InterestBearingConfig` — also deny-listed,
+/// and hitting the identical `validate_mint_extensions` branch that
+/// short-circuits before any balance/ATA/fee logic, so it guards the
+/// whole deny-list (TransferFee included), not just one extension. The
+/// honest counterparty then recovers both legs via Reject, which stays
+/// tolerant.
 #[test]
-fn test_settle_succeeds_after_post_create_interest_bearing_activation() {
+fn test_settle_rejects_post_create_blocked_extension() {
     let mut context = TestContext::new();
     let fixture = setup_dvp_with_programs(
         &mut context,
@@ -407,18 +409,45 @@ fn test_settle_succeeds_after_post_create_interest_bearing_activation() {
     assert_fund_b(&mut context, &fixture);
 
     // Swap mint_a in place to an InterestBearing-bearing T22 mint —
-    // would fail Create's deny-list now, but Settle does not re-check.
+    // deny-listed, so Settle re-validation must reject it.
     set_mint_2022_with_interest_bearing(
         &mut context,
         &fixture.mint_a,
         &fixture.settlement_authority.pubkey(),
     );
 
-    assert_settle_dvp(&mut context, &fixture);
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_program_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        BLOCKED_MINT_EXTENSION,
+    );
 
-    // Cross delivery occurred at exactly the agreed amounts.
-    assert_eq!(get_token_balance(&context, &fixture.user_a_ata_b), AMOUNT_B);
-    assert_eq!(get_token_balance(&context, &fixture.user_b_ata_a), AMOUNT_A);
+    // Funds are not stranded: Reject recovers both legs (InterestBearing
+    // does not block transfers, and Reject skips the extension check).
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_a);
+    assert_eq!(
+        get_token_balance(&context, &fixture.user_a_ata_a),
+        INITIAL_BALANCE
+    );
+    assert_eq!(
+        get_token_balance(&context, &fixture.user_b_ata_b),
+        INITIAL_BALANCE
+    );
     assert!(context.get_account(&fixture.swap_dvp).is_none());
 }
 
