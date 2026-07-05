@@ -280,9 +280,10 @@ pub fn transfer_checked_cpi(
     );
     let total = 4 + remaining.len();
 
-    // Account metas: 4 fixed + N trailing. Trailing forwards each
-    // remaining account's writable/signer flags as-is so the hook
-    // program receives them with the flags the client declared.
+    // Account metas: 4 fixed + N trailing. Forward each extra's writable
+    // flag but never its signer bit: a malicious hook could declare a tx
+    // signer (e.g. the settlement authority) as a static extra and drain
+    // it. The only legit CPI signer is the SwapDvp PDA (slot 3).
     const UNINIT_META: MaybeUninit<InstructionAccount> = MaybeUninit::uninit();
     let mut metas = [UNINIT_META; MAX_TRANSFER_CHECKED_ACCOUNTS];
     metas[0].write(InstructionAccount::writable(from.address()));
@@ -290,7 +291,12 @@ pub fn transfer_checked_cpi(
     metas[2].write(InstructionAccount::writable(to.address()));
     metas[3].write(InstructionAccount::readonly_signer(authority.address()));
     for (i, acc) in remaining.iter().enumerate() {
-        metas[4 + i].write(InstructionAccount::from(acc));
+        let meta = if acc.is_writable() {
+            InstructionAccount::writable(acc.address())
+        } else {
+            InstructionAccount::readonly(acc.address())
+        };
+        metas[4 + i].write(meta);
     }
     // SAFETY: the first `total` slots were just initialised above.
     let metas_slice: &[InstructionAccount] =

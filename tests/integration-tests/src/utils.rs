@@ -613,6 +613,72 @@ pub fn hook_extras_for_mint(mint: &Pubkey) -> Vec<solana_sdk::instruction::Accou
     ]
 }
 
+/// Like [`setup_hook_mint`], but the `ExtraAccountMetaList` declares two
+/// extras aimed at draining a wallet: `victim` as a **signer-bearing**
+/// static extra and `attacker` as a writable one. A generic client
+/// resolver faithfully marks `victim` as a signer; the swap program must
+/// strip that bit before forwarding to the hook. See DVP-15.
+pub fn setup_malicious_hook_mint(
+    context: &mut TestContext,
+    mint: &Pubkey,
+    victim: &Pubkey,
+    attacker: &Pubkey,
+) {
+    use spl_tlv_account_resolution::{account::ExtraAccountMeta, state::ExtraAccountMetaList};
+    use spl_transfer_hook_interface::{
+        get_extra_account_metas_address, instruction::ExecuteInstruction,
+    };
+
+    set_mint_2022_with_transfer_hook(
+        context,
+        mint,
+        &HOOK_FIXTURE_PROGRAM_ID,
+        &context.payer.pubkey(),
+    );
+
+    let validation_pda = get_extra_account_metas_address(mint, &HOOK_FIXTURE_PROGRAM_ID);
+    // victim: signer + writable (a System transfer's source needs both) —
+    // the signer bit is what the fix must strip. attacker: writable sink.
+    // system program: so the hook can CPI it to move the drained lamports.
+    let extras = vec![
+        ExtraAccountMeta::new_with_pubkey(victim, true, true).unwrap(),
+        ExtraAccountMeta::new_with_pubkey(attacker, false, true).unwrap(),
+        ExtraAccountMeta::new_with_pubkey(&solana_program::system_program::ID, false, false)
+            .unwrap(),
+    ];
+    let size = ExtraAccountMetaList::size_of(extras.len()).unwrap();
+    let mut data = vec![0u8; size];
+    ExtraAccountMetaList::init::<ExecuteInstruction>(&mut data, &extras).unwrap();
+    write_account(
+        context,
+        &validation_pda,
+        data,
+        HOOK_FIXTURE_PROGRAM_ID,
+        1_000_000_000,
+    );
+}
+
+/// Trailing accounts for a mint set up via [`setup_malicious_hook_mint`]:
+/// victim (marked writable so the client resolver would forward its
+/// runtime signer bit), attacker, hook program, validation PDA.
+pub fn malicious_hook_extras(
+    mint: &Pubkey,
+    victim: &Pubkey,
+    attacker: &Pubkey,
+) -> Vec<solana_sdk::instruction::AccountMeta> {
+    use solana_sdk::instruction::AccountMeta;
+    use spl_transfer_hook_interface::get_extra_account_metas_address;
+
+    let validation_pda = get_extra_account_metas_address(mint, &HOOK_FIXTURE_PROGRAM_ID);
+    vec![
+        AccountMeta::new(*victim, false),
+        AccountMeta::new(*attacker, false),
+        AccountMeta::new_readonly(solana_program::system_program::ID, false),
+        AccountMeta::new_readonly(HOOK_FIXTURE_PROGRAM_ID, false),
+        AccountMeta::new_readonly(validation_pda, false),
+    ]
+}
+
 /// TransferFeeConfig — a blocked extension; used in negative tests.
 pub fn set_mint_2022_with_transfer_fee(
     context: &mut TestContext,
