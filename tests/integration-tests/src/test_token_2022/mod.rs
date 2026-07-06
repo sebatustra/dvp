@@ -16,7 +16,8 @@
 //!   extension check so funds can never get stranded).
 
 use dvp_swap_program_client::instructions::{
-    CancelDvpBuilder, CreateDvpBuilder, ReclaimDvpBuilder, RejectDvpBuilder, SettleDvpBuilder,
+    CancelDvpBuilder, CreateDvpBuilder, ReclaimDvpBuilder, RecoverDvpBuilder, RejectDvpBuilder,
+    SettleDvpBuilder,
 };
 use solana_sdk::{account::Account, signature::Keypair, signature::Signer};
 
@@ -916,6 +917,98 @@ fn test_reclaim_rejects_signer_bearing_hook_extra() {
         context.get_account(&victim).unwrap().lamports,
         victim_before,
         "depositor wallet must be untouched"
+    );
+    assert_eq!(
+        context
+            .get_account(&attacker.pubkey())
+            .map(|a| a.lamports)
+            .unwrap_or(0),
+        0,
+        "attacker must not receive any drained lamports"
+    );
+}
+
+/// Recreate the escrow ATA for the (now closed) SwapDvp wallet so a late
+/// deposit can land in it, as the funding-race attack does.
+fn recreate_dead_escrow_a(context: &mut TestContext, fixture: &crate::state_utils::DvpFixture) {
+    let ix = spl_associated_token_account::instruction::create_associated_token_account(
+        &context.payer.pubkey(),
+        &fixture.swap_dvp,
+        &fixture.mint_a,
+        &fixture.token_program_a,
+    );
+    context.send(ix, &[]).expect("recreate dead escrow ATA");
+}
+
+/// DVP-15/DVP-4/DVP-8 regression on the RecoverDvp path. RecoverDvp also
+/// forwards hook extras into its drain `TransferChecked` CPI, so the
+/// signer-stripping fix must hold there too. A late deposit lands in a
+/// recreated escrow of a closed DvP; a malicious hook mint then names the
+/// recovering party as a signer-bearing extra so a generic resolver would
+/// forward their signature into the hook CPI. The program must strip the
+/// signer bit, so the drain CPI fails and RecoverDvp reverts, leaving the
+/// recovering user's wallet intact.
+///
+/// Pre-fix this would FAIL: the drain succeeds and RecoverDvp completes.
+#[test]
+fn test_recover_dvp_rejects_signer_bearing_hook_extra() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    // Benign EAML so the late funding transfer (authority: user_a) works,
+    // then the malicious EAML for the RecoverDvp under attack.
+    setup_hook_on_mint_a(&mut context, &fixture);
+
+    assert_create_dvp(&mut context, &fixture);
+    // Reject before funding closes the DvP with empty escrows (no hook
+    // CPI), giving RecoverDvp its post-close precondition.
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_b);
+
+    // Recreate the dead escrow and let user_a's in-flight funding land in
+    // it, so RecoverDvp has a non-zero balance to drain via the hook.
+    recreate_dead_escrow_a(&mut context, &fixture);
+    fund_a_with_hook(&mut context, &fixture);
+
+    // Swap in the malicious EAML: extra[0] = the recovering party
+    // (signer), extra[1] = the attacker's drain target.
+    let attacker = Keypair::new();
+    let victim = fixture.user_a.pubkey();
+    setup_malicious_hook_mint(&mut context, &fixture.mint_a, &victim, &attacker.pubkey());
+
+    let victim_before = context.get_account(&victim).unwrap().lamports;
+
+    let leg_a_extras = malicious_hook_extras(&fixture.mint_a, &victim, &attacker.pubkey());
+    let ix = RecoverDvpBuilder::new()
+        .signer(victim)
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint(fixture.mint_a)
+        .dvp_escrow_ata(fixture.dvp_ata_a)
+        .signer_dest_ata(fixture.user_a_ata_a)
+        .token_program(fixture.token_program_a)
+        .memo_program(MEMO_PROGRAM_ID)
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .nonce(fixture.nonce)
+        .add_remaining_accounts(&leg_a_extras)
+        .instruction();
+    let result = context.send(ix, &[&fixture.user_a]);
+
+    assert!(
+        result.is_err(),
+        "recover must revert when a hook tries to abuse a forwarded signer"
+    );
+    assert_eq!(
+        context.get_account(&victim).unwrap().lamports,
+        victim_before,
+        "recovering user wallet must be untouched"
     );
     assert_eq!(
         context

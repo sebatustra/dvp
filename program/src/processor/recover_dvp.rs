@@ -239,7 +239,7 @@ fn parse_instruction_data(data: &[u8]) -> Result<RecoverDvpArgs, ProgramError> {
     let mint_b = read_address();
 
     let nonce = u64::from_le_bytes(
-        data[32 * 5..INSTRUCTION_DATA_LEN]
+        data[offset..INSTRUCTION_DATA_LEN]
             .try_into()
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     );
