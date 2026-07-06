@@ -60,17 +60,16 @@ pub fn verify_canonical_ata(
     Ok(())
 }
 
-/// Reject a non-native escrow whose lamports exceed the rent-exempt
-/// minimum for its actual size (DVP-14). Raw SOL is invisible to token
-/// accounting on non-WSOL legs, and the close paths sweep the escrow's
-/// full lamport balance to the closer, so a preloaded escrow would let
-/// a party pocket the excess via RejectDvp. Runs after the ATA create
-/// CPI so it catches both a pre-created ATA holding extra SOL and
-/// lamports parked at the address before creation (the ATA program only
-/// tops up the rent shortfall). Native escrows are exempt: excess
-/// lamports there are the WSOL deposit mechanism. SOL sent to a
-/// non-native escrow after creation is out of the program's hands and
-/// still goes to the closer.
+/// Require that a non-native escrow holds exactly its rent-exempt
+/// minimum and no more. For a non-WSOL leg the token balance lives in
+/// the account's data, so any lamports beyond rent are raw SOL that
+/// token accounting ignores; because the close paths pay out the
+/// escrow's full lamport balance to whoever closes the DvP, that excess
+/// must not be present. Call this after the ATA create CPI so it sees
+/// both a pre-created ATA already holding extra SOL and lamports parked
+/// at the address before creation (the ATA program only tops up the rent
+/// shortfall). Native (WSOL) escrows are exempt: there, lamports above
+/// rent are the deposit itself, adopted as token balance by SyncNative.
 #[inline(always)]
 pub fn verify_escrow_not_preloaded(info: &AccountView, rent: &Rent) -> ProgramResult {
     let (data_len, is_native) = {
@@ -319,9 +318,8 @@ pub fn transfer_checked_cpi(
     let total = 4 + remaining.len();
 
     // Account metas: 4 fixed + N trailing. Forward each extra's writable
-    // flag but never its signer bit: a malicious hook could declare a tx
-    // signer (e.g. the settlement authority) as a static extra and drain
-    // it. The only legit CPI signer is the SwapDvp PDA (slot 3).
+    // flag but never its signer bit. The only CPI signer is the SwapDvp
+    // PDA (slot 3); extras are always passed as non-signers.
     const UNINIT_META: MaybeUninit<InstructionAccount> = MaybeUninit::uninit();
     let mut metas = [UNINIT_META; MAX_TRANSFER_CHECKED_ACCOUNTS];
     metas[0].write(InstructionAccount::writable(from.address()));

@@ -8,9 +8,9 @@
 //! - **Malicious drain (>= 2 extras):** attempts a System transfer of
 //!   lamports out of the first extra (which a malicious EAML declares as a
 //!   signer targeting the settlement authority) into the second extra.
-//!   The swap program must strip the signer bit before forwarding, so this
-//!   CPI fails for lack of a signer and reverts the whole terminal action.
-//!   Exercises the DVP-15 fix (see `test_settle_rejects_signer_bearing_hook_extra`).
+//!   The swap program strips the signer bit before forwarding, so this
+//!   CPI is missing a required signer and reverts the whole terminal
+//!   action (see `test_settle_rejects_signer_bearing_hook_extra`).
 #![no_std]
 
 use pinocchio::{

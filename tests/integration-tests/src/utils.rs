@@ -622,8 +622,8 @@ pub fn hook_extras_for_mint(mint: &Pubkey) -> Vec<solana_sdk::instruction::Accou
 /// Like [`setup_hook_mint`], but the `ExtraAccountMetaList` declares two
 /// extras aimed at draining a wallet: `victim` as a **signer-bearing**
 /// static extra and `attacker` as a writable one. A generic client
-/// resolver faithfully marks `victim` as a signer; the swap program must
-/// strip that bit before forwarding to the hook. See DVP-15.
+/// resolver faithfully marks `victim` as a signer; the swap program
+/// strips that bit before forwarding to the hook.
 pub fn setup_malicious_hook_mint(
     context: &mut TestContext,
     mint: &Pubkey,
@@ -644,7 +644,7 @@ pub fn setup_malicious_hook_mint(
 
     let validation_pda = get_extra_account_metas_address(mint, &HOOK_FIXTURE_PROGRAM_ID);
     // victim: signer + writable (a System transfer's source needs both) —
-    // the signer bit is what the fix must strip. attacker: writable sink.
+    // the signer bit is what the swap program strips. attacker: writable sink.
     // system program: so the hook can CPI it to move the drained lamports.
     let extras = vec![
         ExtraAccountMeta::new_with_pubkey(victim, true, true).unwrap(),

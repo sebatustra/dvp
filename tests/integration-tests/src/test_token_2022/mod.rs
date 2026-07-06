@@ -377,7 +377,7 @@ fn test_create_rejects_mint_program_owner_mismatch_b() {
 }
 
 // ---------------------------------------------------------------------
-// Extension validation runs at Create AND Settle (DVP-12). The recovery
+// Extension validation runs at Create AND Settle. The recovery
 // paths (Cancel/Reject/Reclaim/Recover) stay tolerant so a post-Create
 // mint mutation can never strand funds. The tests below pin both halves:
 // Settle re-validates and rejects a leg that gained a blocked extension
@@ -385,7 +385,7 @@ fn test_create_rejects_mint_program_owner_mismatch_b() {
 // itself does no extension check.
 // ---------------------------------------------------------------------
 
-/// DVP-12 regression. The exploit: a party leaves their own leg unfunded
+/// The exploit: a party leaves their own leg unfunded
 /// until the counterparty commits, then closes the zero-supply mint and
 /// recreates it at the same address with a deny-listed extension (e.g.
 /// TransferFee, which short-delivers the leg). Settle must re-validate
@@ -591,17 +591,12 @@ fn test_settle_with_hook_on_mint_a() {
     assert_eq!(get_token_balance(&context, &fixture.user_b_ata_a), AMOUNT_A);
 }
 
-/// DVP-15 regression. A malicious hook mint declares the settlement
-/// authority as a signer-bearing hook extra so a generic resolver
-/// forwards its signature into the hook CPI, letting the hook drain the
-/// operator wallet during a routine Settle. The program must strip the
-/// signer bit from every forwarded hook extra, so the hook's drain CPI
-/// fails for want of a signer and the whole Settle reverts — the
-/// authority keeps its lamports.
-///
-/// Pre-fix this test would FAIL: the signer bit reached the hook, the
-/// System transfer succeeded, Settle completed, and DRAIN_LAMPORTS moved
-/// to the attacker.
+/// A malicious hook mint declares the settlement authority as a
+/// signer-bearing hook extra so a generic resolver forwards its signature
+/// into the hook CPI, letting the hook drain the operator wallet during a
+/// routine Settle. The program strips the signer bit from every forwarded
+/// hook extra, so the hook's drain CPI is missing a required signer and
+/// the whole Settle reverts — the authority keeps its lamports.
 #[test]
 fn test_settle_rejects_signer_bearing_hook_extra() {
     let mut context = TestContext::new();
@@ -760,13 +755,11 @@ fn test_reject_with_hook_on_mint_a() {
     assert!(context.get_account(&fixture.swap_dvp).is_none());
 }
 
-/// DVP-4 regression. Same signer-leak as DVP-15/DVP-8, exercised through
-/// the Cancel/Reject shared `refund_and_close_dvp` path. A malicious hook
-/// mint names the rejecting party (`user_a`) as a signer-bearing extra;
-/// the program must strip the signer bit so the hook's drain CPI fails
-/// and Reject reverts, leaving the rejecting user's wallet intact.
-///
-/// Pre-fix this would FAIL: the drain succeeds and Reject completes.
+/// The same signer-leak vector, exercised through the Cancel/Reject
+/// shared `refund_and_close_dvp` path. A malicious hook mint names the
+/// rejecting party (`user_a`) as a signer-bearing extra; the program
+/// strips the signer bit so the hook's drain CPI is missing a required
+/// signer and Reject reverts, leaving the rejecting user's wallet intact.
 #[test]
 fn test_reject_rejects_signer_bearing_hook_extra() {
     let mut context = TestContext::new();
@@ -866,14 +859,12 @@ fn test_reclaim_with_hook_on_mint_a() {
     );
 }
 
-/// DVP-8 regression. Same signer-leak as DVP-15, but on the depositor
-/// recovery path: a malicious hook mint names the reclaiming party
-/// (`user_a`) as a signer-bearing extra so a generic resolver forwards
-/// their signature into the hook CPI, letting the hook drain the
-/// depositor's wallet during a routine Reclaim. The program must strip
-/// the signer bit, so the drain CPI fails and Reclaim reverts.
-///
-/// Pre-fix this would FAIL: the drain succeeds and Reclaim completes.
+/// The same signer-leak vector, but on the depositor recovery path: a
+/// malicious hook mint names the reclaiming party (`user_a`) as a
+/// signer-bearing extra so a generic resolver forwards their signature
+/// into the hook CPI, letting the hook drain the depositor's wallet
+/// during a routine Reclaim. The program strips the signer bit, so the
+/// drain CPI is missing a required signer and Reclaim reverts.
 #[test]
 fn test_reclaim_rejects_signer_bearing_hook_extra() {
     let mut context = TestContext::new();
@@ -940,16 +931,14 @@ fn recreate_dead_escrow_a(context: &mut TestContext, fixture: &crate::state_util
     context.send(ix, &[]).expect("recreate dead escrow ATA");
 }
 
-/// DVP-15/DVP-4/DVP-8 regression on the RecoverDvp path. RecoverDvp also
+/// The same signer-leak vector on the RecoverDvp path. RecoverDvp also
 /// forwards hook extras into its drain `TransferChecked` CPI, so the
-/// signer-stripping fix must hold there too. A late deposit lands in a
+/// signer stripping must hold there too. A late deposit lands in a
 /// recreated escrow of a closed DvP; a malicious hook mint then names the
 /// recovering party as a signer-bearing extra so a generic resolver would
-/// forward their signature into the hook CPI. The program must strip the
-/// signer bit, so the drain CPI fails and RecoverDvp reverts, leaving the
-/// recovering user's wallet intact.
-///
-/// Pre-fix this would FAIL: the drain succeeds and RecoverDvp completes.
+/// forward their signature into the hook CPI. The program strips the
+/// signer bit, so the drain CPI is missing a required signer and
+/// RecoverDvp reverts, leaving the recovering user's wallet intact.
 #[test]
 fn test_recover_dvp_rejects_signer_bearing_hook_extra() {
     let mut context = TestContext::new();

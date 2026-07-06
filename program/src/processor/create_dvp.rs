@@ -128,8 +128,7 @@ pub fn process_create_dvp(
 
     // Resolve the destination defaults here (the consent point) so
     // Settle never branches: delivery always goes to the stored
-    // destination's canonical ATA. A destination equal to the SwapDvp
-    // PDA would make that ATA the escrow itself (DVP-11).
+    // destination's canonical ATA.
     let user_a_settlement_destination = args.user_a_settlement_destination.unwrap_or(args.user_a);
     let user_b_settlement_destination = args.user_b_settlement_destination.unwrap_or(args.user_b);
     require!(
@@ -193,7 +192,7 @@ pub fn process_create_dvp(
 
     let rent = Rent::get()?;
     // A preload above the rent reserve would be adopted into the live
-    // PDA and swept to the closer at the terminal instructions (DVP-1).
+    // PDA and swept to the closer at the terminal instructions.
     // Up to the reserve is harmless: the payer tops up to exactly it.
     require!(
         swap_dvp_info.lamports() <= rent.try_minimum_balance(SwapDvp::LEN)?,
@@ -246,7 +245,7 @@ pub fn process_create_dvp(
     .invoke()?;
 
     // A non-native escrow must start with no lamports beyond rent, or
-    // the close paths would sweep the excess to the closer (DVP-14).
+    // the close paths would sweep the excess to the closer.
     verify_escrow_not_preloaded(dvp_ata_a_info, &rent)?;
     verify_escrow_not_preloaded(dvp_ata_b_info, &rent)?;
 

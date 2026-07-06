@@ -381,7 +381,7 @@ fn test_create_dvp_succeeds_when_escrow_ata_was_pre_created() {
     assert_eq!(get_token_balance(&context, &fixture.dvp_ata_b), 0);
 }
 
-/// DVP-14: a non-native escrow holding raw SOL above its rent minimum
+/// A non-native escrow holding raw SOL above its rent minimum
 /// must not be adopted. The close paths sweep the escrow's full lamport
 /// balance to the closer, so a party could Reject and pocket the preload.
 #[test]
@@ -430,9 +430,8 @@ fn test_create_dvp_rejects_escrow_preloaded_with_sol() {
     assert_program_error(context.send(ix, &[]), ESCROW_PRELOADED_WITH_LAMPORTS);
 }
 
-/// The native carve-out for DVP-14: preloaded lamports on a WSOL escrow
-/// are the deposit mechanism (SyncNative adopts them as token balance),
-/// so CreateDvp accepts them.
+/// Preloaded lamports on a WSOL escrow are the deposit mechanism
+/// (SyncNative adopts them as token balance), so CreateDvp accepts them.
 #[test]
 fn test_create_dvp_accepts_preloaded_wsol_escrow() {
     let mut context = TestContext::new();
@@ -500,7 +499,7 @@ fn test_create_dvp_accepts_preloaded_wsol_escrow() {
     assert!(context.get_account(&swap_dvp).is_some());
 }
 
-/// DVP-1: raw SOL preloaded onto the future swap_dvp address must not
+/// Raw SOL preloaded onto the future swap_dvp address must not
 /// be adopted. The terminal close paths sweep the PDA's full balance
 /// to the closer, so a party could Reject and pocket the preload.
 #[test]
@@ -553,7 +552,7 @@ fn test_create_dvp_accepts_swap_dvp_preloaded_below_rent_reserve() {
     assert!(context.get_account(&fixture.swap_dvp).is_some());
 }
 
-/// DVP-11: a settlement destination equal to the SwapDvp PDA would make
+/// A settlement destination equal to the SwapDvp PDA would make
 /// the delivery ATA the escrow itself, so Settle's transfer becomes a
 /// self-transfer no-op. On a WSOL leg the close would then pay the
 /// undelivered leg to settlement_authority.
