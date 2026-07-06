@@ -70,6 +70,8 @@ pub const DVP_STILL_OPEN: u32 = DvpSwapProgramError::DvpStillOpen as u32;
 pub const DVP_NEVER_CREATED: u32 = DvpSwapProgramError::DvpNeverCreated as u32;
 pub const ESCROW_PRELOADED_WITH_LAMPORTS: u32 =
     DvpSwapProgramError::EscrowPreloadedWithLamports as u32;
+pub const SETTLEMENT_DESTINATION_IS_SWAP_DVP: u32 =
+    DvpSwapProgramError::SettlementDestinationIsSwapDvp as u32;
 
 const MIN_LAMPORTS: u64 = 500_000_000;
 

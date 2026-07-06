@@ -95,6 +95,12 @@ pub enum DvpSwapProgramError {
     /// to the closer, so adopting the excess would misdirect it.
     #[error("escrow ATA preloaded with unexpected lamports")]
     EscrowPreloadedWithLamports,
+
+    /// (19) A settlement destination equals the SwapDvp PDA, so its
+    /// canonical ATA is the escrow itself and delivery would be a
+    /// self-transfer, which SPL Token treats as a successful no-op.
+    #[error("settlement destination must not be the swap_dvp PDA")]
+    SettlementDestinationIsSwapDvp,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

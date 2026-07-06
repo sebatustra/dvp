@@ -11,8 +11,8 @@ use crate::{
         set_native_mint, swap_dvp_pda, TestContext, EARLIEST_AFTER_EXPIRY,
         ESCROW_PRELOADED_WITH_LAMPORTS, EXPIRY_NOT_IN_FUTURE, EXPIRY_TOO_FAR_IN_FUTURE,
         NATIVE_MINT, NONCE_ALREADY_USED, REF_STRING_TOO_LONG, SAME_MINT, SELF_DVP,
-        SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY, SWAP_PROGRAM_ID,
-        TOKEN_PROGRAM_ID, ZERO_AMOUNT,
+        SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY,
+        SETTLEMENT_DESTINATION_IS_SWAP_DVP, SWAP_PROGRAM_ID, TOKEN_PROGRAM_ID, ZERO_AMOUNT,
     },
 };
 
@@ -497,6 +497,68 @@ fn test_create_dvp_accepts_preloaded_wsol_escrow() {
         .expect("CreateDvp with preloaded WSOL escrow");
 
     assert!(context.get_account(&swap_dvp).is_some());
+}
+
+/// DVP-11: a settlement destination equal to the SwapDvp PDA would make
+/// the delivery ATA the escrow itself, so Settle's transfer becomes a
+/// self-transfer no-op. On a WSOL leg the close would then pay the
+/// undelivered leg to settlement_authority.
+#[test]
+fn test_create_dvp_rejects_user_a_destination_equal_to_swap_dvp() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+
+    let ix = CreateDvpBuilder::new()
+        .payer(context.payer.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .amount_a(AMOUNT_A)
+        .amount_b(AMOUNT_B)
+        .expiry_timestamp(fixture.expiry)
+        .nonce(fixture.nonce)
+        .ref_string(REF_STRING.to_string())
+        .user_a_settlement_destination(fixture.swap_dvp)
+        .instruction();
+
+    assert_program_error(context.send(ix, &[]), SETTLEMENT_DESTINATION_IS_SWAP_DVP);
+}
+
+#[test]
+fn test_create_dvp_rejects_user_b_destination_equal_to_swap_dvp() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+
+    let ix = CreateDvpBuilder::new()
+        .payer(context.payer.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .amount_a(AMOUNT_A)
+        .amount_b(AMOUNT_B)
+        .expiry_timestamp(fixture.expiry)
+        .nonce(fixture.nonce)
+        .ref_string(REF_STRING.to_string())
+        .user_b_settlement_destination(fixture.swap_dvp)
+        .instruction();
+
+    assert_program_error(context.send(ix, &[]), SETTLEMENT_DESTINATION_IS_SWAP_DVP);
 }
 
 /// The ref string is stored zero-padded, and the account decodes with

@@ -126,6 +126,18 @@ pub fn process_create_dvp(
         ProgramError::InvalidSeeds
     );
 
+    // Resolve the destination defaults here (the consent point) so
+    // Settle never branches: delivery always goes to the stored
+    // destination's canonical ATA. A destination equal to the SwapDvp
+    // PDA would make that ATA the escrow itself (DVP-11).
+    let user_a_settlement_destination = args.user_a_settlement_destination.unwrap_or(args.user_a);
+    let user_b_settlement_destination = args.user_b_settlement_destination.unwrap_or(args.user_b);
+    require!(
+        user_a_settlement_destination != expected_swap_dvp
+            && user_b_settlement_destination != expected_swap_dvp,
+        DvpSwapProgramError::SettlementDestinationIsSwapDvp
+    );
+
     // Nonce tombstone, derived from the SwapDvp address so it's 1:1 with
     // this trade's seeds. It's created below and never closed, so a
     // non-system owner here means the nonce was already used — reject
@@ -172,11 +184,8 @@ pub fn process_create_dvp(
         expiry_timestamp: args.expiry_timestamp,
         nonce: args.nonce,
         ref_string: args.ref_string,
-        // Resolve the destination defaults here (the consent point) so
-        // Settle never branches: delivery always goes to the stored
-        // destination's canonical ATA.
-        user_a_settlement_destination: args.user_a_settlement_destination.unwrap_or(args.user_a),
-        user_b_settlement_destination: args.user_b_settlement_destination.unwrap_or(args.user_b),
+        user_a_settlement_destination,
+        user_b_settlement_destination,
         earliest_settlement_timestamp: args.earliest_settlement_timestamp,
     };
     let (nonce_bytes, bump_bytes) = dvp.seed_buffers();
