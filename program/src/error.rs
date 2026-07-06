@@ -101,6 +101,12 @@ pub enum DvpSwapProgramError {
     /// self-transfer, which SPL Token treats as a successful no-op.
     #[error("settlement destination must not be the swap_dvp PDA")]
     SettlementDestinationIsSwapDvp,
+
+    /// (20) The swap_dvp account holds lamports above its rent reserve
+    /// at CreateDvp. The terminal close paths sweep the PDA's full
+    /// balance to the closer, so adopting a preload would misdirect it.
+    #[error("swap_dvp preloaded with lamports above its rent reserve")]
+    SwapDvpPreloadedWithLamports,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

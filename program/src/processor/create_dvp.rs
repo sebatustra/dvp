@@ -192,6 +192,13 @@ pub fn process_create_dvp(
     let swap_dvp_seeds = dvp.signing_seeds(&nonce_bytes, &bump_bytes);
 
     let rent = Rent::get()?;
+    // A preload above the rent reserve would be adopted into the live
+    // PDA and swept to the closer at the terminal instructions (DVP-1).
+    // Up to the reserve is harmless: the payer tops up to exactly it.
+    require!(
+        swap_dvp_info.lamports() <= rent.try_minimum_balance(SwapDvp::LEN)?,
+        DvpSwapProgramError::SwapDvpPreloadedWithLamports
+    );
     create_pda_account(
         payer_info,
         &rent,

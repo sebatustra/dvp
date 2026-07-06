@@ -275,6 +275,12 @@
         "kind": "errorNode",
         "message": "settlement destination must not be the swap_dvp PDA",
         "name": "settlementDestinationIsSwapDvp"
+      },
+      {
+        "code": 20,
+        "kind": "errorNode",
+        "message": "swap_dvp preloaded with lamports above its rent reserve",
+        "name": "swapDvpPreloadedWithLamports"
       }
     ],
     "instructions": [

@@ -12,7 +12,8 @@ use crate::{
         ESCROW_PRELOADED_WITH_LAMPORTS, EXPIRY_NOT_IN_FUTURE, EXPIRY_TOO_FAR_IN_FUTURE,
         NATIVE_MINT, NONCE_ALREADY_USED, REF_STRING_TOO_LONG, SAME_MINT, SELF_DVP,
         SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY,
-        SETTLEMENT_DESTINATION_IS_SWAP_DVP, SWAP_PROGRAM_ID, TOKEN_PROGRAM_ID, ZERO_AMOUNT,
+        SETTLEMENT_DESTINATION_IS_SWAP_DVP, SWAP_DVP_PRELOADED_WITH_LAMPORTS, SWAP_PROGRAM_ID,
+        TOKEN_PROGRAM_ID, ZERO_AMOUNT,
     },
 };
 
@@ -497,6 +498,59 @@ fn test_create_dvp_accepts_preloaded_wsol_escrow() {
         .expect("CreateDvp with preloaded WSOL escrow");
 
     assert!(context.get_account(&swap_dvp).is_some());
+}
+
+/// DVP-1: raw SOL preloaded onto the future swap_dvp address must not
+/// be adopted. The terminal close paths sweep the PDA's full balance
+/// to the closer, so a party could Reject and pocket the preload.
+#[test]
+fn test_create_dvp_rejects_swap_dvp_preloaded_with_sol() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+
+    context
+        .svm
+        .airdrop(&fixture.swap_dvp, 1_000_000_000)
+        .expect("preload SOL onto future PDA");
+
+    let ix = CreateDvpBuilder::new()
+        .payer(context.payer.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .amount_a(AMOUNT_A)
+        .amount_b(AMOUNT_B)
+        .expiry_timestamp(fixture.expiry)
+        .nonce(fixture.nonce)
+        .ref_string(REF_STRING.to_string())
+        .instruction();
+
+    assert_program_error(context.send(ix, &[]), SWAP_DVP_PRELOADED_WITH_LAMPORTS);
+}
+
+/// A preload at or below the rent reserve is harmless (the payer tops
+/// up to exactly the reserve), so it must not block creation: rejecting
+/// it would let anyone grief a trade tuple with a 1-lamport transfer.
+#[test]
+fn test_create_dvp_accepts_swap_dvp_preloaded_below_rent_reserve() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+
+    context
+        .svm
+        .airdrop(&fixture.swap_dvp, 1)
+        .expect("dust the future PDA");
+
+    assert_create_dvp(&mut context, &fixture);
+    assert!(context.get_account(&fixture.swap_dvp).is_some());
 }
 
 /// DVP-11: a settlement destination equal to the SwapDvp PDA would make
