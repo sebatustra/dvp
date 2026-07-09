@@ -1,0 +1,145 @@
+/**
+ * Checked decode helpers must reject accounts that are not owned
+ * by the DvP program or don't match the exact on-chain layout, and the
+ * derivation helpers must let funders compute canonical addresses instead
+ * of trusting attacker-supplied ones.
+ */
+import { describe, expect, it } from "@jest/globals";
+import {
+  getAddressDecoder,
+  type Address,
+  type MaybeEncodedAccount,
+} from "@solana/kit";
+import { DVP_SWAP_PROGRAM_PROGRAM_ADDRESS } from "../generated/programs/dvpSwapProgram";
+import { getSwapDvpEncoder } from "../generated/accounts/swapDvp";
+import {
+  decodeSwapDvpChecked,
+  findSwapDvpEscrowAta,
+  findSwapDvpPda,
+  SWAP_DVP_ACCOUNT_SIZE,
+} from "../verify";
+
+const SYSTEM_PROGRAM = "11111111111111111111111111111111" as Address;
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address;
+
+/** Dummy pubkey made of a single byte repeated 32 times. */
+const addressOf = (fill: number) =>
+  getAddressDecoder().decode(new Uint8Array(32).fill(fill));
+
+const validData = () =>
+  new Uint8Array(
+    getSwapDvpEncoder().encode({
+      bump: 254,
+      userA: addressOf(1),
+      userB: addressOf(2),
+      mintA: addressOf(3),
+      mintB: addressOf(4),
+      settlementAuthority: addressOf(5),
+      tokenProgramA: addressOf(6),
+      tokenProgramB: addressOf(7),
+      amountA: 1_000n,
+      amountB: 2_500n,
+      expiryTimestamp: 1_780_000_000n,
+      nonce: 42n,
+      refString: Array.from(new Uint8Array(64)),
+      userASettlementDestination: addressOf(1),
+      userBSettlementDestination: addressOf(2),
+      earliestSettlementTimestamp: null,
+    }),
+  );
+
+function encodedAccount(overrides: {
+  programAddress?: Address;
+  data?: Uint8Array;
+  exists?: boolean;
+}): MaybeEncodedAccount {
+  return {
+    address: addressOf(11),
+    exists: overrides.exists ?? true,
+    programAddress:
+      overrides.programAddress ?? DVP_SWAP_PROGRAM_PROGRAM_ADDRESS,
+    data: overrides.data ?? validData(),
+    executable: false,
+    lamports: 1_000_000n,
+    space: BigInt((overrides.data ?? validData()).length),
+  } as MaybeEncodedAccount;
+}
+
+describe("decodeSwapDvpChecked", () => {
+  it("accepts a program-owned, exact-size account", () => {
+    const decoded = decodeSwapDvpChecked(encodedAccount({}));
+    expect(decoded.data.amountA).toBe(1_000n);
+    expect(decoded.data.earliestSettlementTimestamp).toEqual({
+      __option: "None",
+    });
+  });
+
+  it("rejects a System-owned account even with perfect data", () => {
+    expect(() =>
+      decodeSwapDvpChecked(encodedAccount({ programAddress: SYSTEM_PROGRAM })),
+    ).toThrow(/owned/i);
+  });
+
+  it("rejects a wrong-size account", () => {
+    expect(() =>
+      decodeSwapDvpChecked(encodedAccount({ data: validData().slice(0, 386) })),
+    ).toThrow(/394|size|length/i);
+  });
+
+  it("rejects a missing account", () => {
+    expect(() =>
+      decodeSwapDvpChecked(encodedAccount({ exists: false })),
+    ).toThrow();
+  });
+
+  it("exposes the on-chain account size", () => {
+    expect(SWAP_DVP_ACCOUNT_SIZE).toBe(394);
+  });
+});
+
+describe("canonical derivation helpers (verify-before-fund)", () => {
+  // Expected address computed independently of this library with the
+  // Solana CLI, mirroring the on-chain seed order
+  // [b"dvp", settlement_authority, user_a, user_b, mint_a, mint_b, nonce_le]:
+  //
+  //   solana find-program-derived-address DzG1qJupt6Khm8s8jB3p93NkhPoiAg2M7vkEhkS15CtC \
+  //     string:dvp \
+  //     hex:0505050505050505050505050505050505050505050505050505050505050505 \  (settlement_authority = addressOf(5))
+  //     hex:0101010101010101010101010101010101010101010101010101010101010101 \  (user_a = addressOf(1))
+  //     hex:0202020202020202020202020202020202020202020202020202020202020202 \  (user_b = addressOf(2))
+  //     hex:0303030303030303030303030303030303030303030303030303030303030303 \  (mint_a = addressOf(3))
+  //     hex:0404040404040404040404040404040404040404040404040404040404040404 \  (mint_b = addressOf(4))
+  //     u64le:42                                                                 (nonce)
+  //
+  //   => 6uMoF2mAhQD9QTz3CmyvhwKzEumEgodECwTf44GoL9Ki
+  it("derives the canonical SwapDvp PDA from agreed terms", async () => {
+    const [address] = await findSwapDvpPda({
+      settlementAuthority: addressOf(5),
+      userA: addressOf(1),
+      userB: addressOf(2),
+      mintA: addressOf(3),
+      mintB: addressOf(4),
+      nonce: 42n,
+    });
+    expect(address).toBe("6uMoF2mAhQD9QTz3CmyvhwKzEumEgodECwTf44GoL9Ki");
+  });
+
+  // Escrow ATAs are canonical Associated Token Accounts of the SwapDvp PDA,
+  // i.e. seeds [swap_dvp, token_program, mint] under the ATA program.
+  // Expected address computed with the Solana CLI:
+  //
+  //   solana find-program-derived-address ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL \
+  //     pubkey:6uMoF2mAhQD9QTz3CmyvhwKzEumEgodECwTf44GoL9Ki \
+  //     pubkey:TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA \
+  //     hex:0303030303030303030303030303030303030303030303030303030303030303   (mint_a = addressOf(3))
+  //
+  //   => GBrJyDbxFv8EQ14ww1546RimNv256wEJwVv3LpBDDbEZ
+  it("derives the canonical escrow ATA for a leg", async () => {
+    const [ata] = await findSwapDvpEscrowAta({
+      swapDvp: "6uMoF2mAhQD9QTz3CmyvhwKzEumEgodECwTf44GoL9Ki" as Address,
+      mint: addressOf(3),
+      tokenProgram: TOKEN_PROGRAM,
+    });
+    expect(ata).toBe("GBrJyDbxFv8EQ14ww1546RimNv256wEJwVv3LpBDDbEZ");
+  });
+});

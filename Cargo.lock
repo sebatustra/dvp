@@ -6809,6 +6809,7 @@ dependencies = [
 name = "tests-dvp-swap-program"
 version = "0.1.0"
 dependencies = [
+ "borsh 1.5.7",
  "dvp-swap-program-client",
  "litesvm",
  "solana-program",

@@ -5,7 +5,6 @@ import {
 } from "codama";
 
 const SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
-const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const ATA_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 export function setInstructionAccountDefaultValues(
@@ -17,10 +16,11 @@ export function setInstructionAccountDefaultValues(
         account: "systemProgram",
         defaultValue: publicKeyValueNode(SYSTEM_PROGRAM_ID),
       },
-      {
-        account: "tokenProgram",
-        defaultValue: publicKeyValueNode(TOKEN_PROGRAM_ID),
-      },
+      // Note: `tokenProgram` (singular) is deliberately NOT defaulted. Only
+      // ReclaimDvp has that account, and the program stores a per-leg token
+      // program at CreateDvp and rejects a mismatch, so a legacy-SPL default
+      // would produce an IncorrectProgramId failure for any Token-2022 leg.
+      // Callers must pass the funded leg's token program explicitly.
       {
         account: "associatedTokenProgram",
         defaultValue: publicKeyValueNode(ATA_PROGRAM_ID),
