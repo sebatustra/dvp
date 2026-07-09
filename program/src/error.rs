@@ -78,6 +78,35 @@ pub enum DvpSwapProgramError {
     /// (15) `ref_string` exceeds `MAX_REF_STRING_LEN` bytes.
     #[error("ref string exceeds the maximum byte length")]
     RefStringTooLong,
+
+    /// (16) Recover targets a SwapDvp that is still open (program-owned).
+    /// While the trade is live, ReclaimDvp is the per-leg recovery path.
+    #[error("DvP is still open; use ReclaimDvp while the trade is live")]
+    DvpStillOpen,
+
+    /// (17) Recover's seed inputs derive a SwapDvp address with no nonce
+    /// tombstone, i.e. no DvP was ever created with these exact seeds.
+    #[error("no DvP was ever created with these seeds")]
+    DvpNeverCreated,
+
+    /// (18) A non-native escrow ATA holds lamports above its rent-exempt
+    /// minimum at CreateDvp. Raw SOL is invisible to token accounting on
+    /// non-WSOL legs and the close paths sweep the full lamport balance
+    /// to the closer, so adopting the excess would misdirect it.
+    #[error("escrow ATA preloaded with unexpected lamports")]
+    EscrowPreloadedWithLamports,
+
+    /// (19) A settlement destination equals the SwapDvp PDA, so its
+    /// canonical ATA is the escrow itself and delivery would be a
+    /// self-transfer, which SPL Token treats as a successful no-op.
+    #[error("settlement destination must not be the swap_dvp PDA")]
+    SettlementDestinationIsSwapDvp,
+
+    /// (20) The swap_dvp account holds lamports above its rent reserve
+    /// at CreateDvp. The terminal close paths sweep the PDA's full
+    /// balance to the closer, so adopting a preload would misdirect it.
+    #[error("swap_dvp preloaded with lamports above its rent reserve")]
+    SwapDvpPreloadedWithLamports,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

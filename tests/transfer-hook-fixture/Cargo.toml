@@ -14,4 +14,5 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [dependencies]
 pinocchio = { workspace = true, features = ["cpi"] }
 pinocchio-log = { workspace = true }
+pinocchio-system = { workspace = true }
 solana-address = { version = "2.0", features = ["curve25519", "decode"] }

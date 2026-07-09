@@ -16,9 +16,10 @@
 //!   extension check so funds can never get stranded).
 
 use dvp_swap_program_client::instructions::{
-    CancelDvpBuilder, CreateDvpBuilder, ReclaimDvpBuilder, RejectDvpBuilder, SettleDvpBuilder,
+    CancelDvpBuilder, CreateDvpBuilder, ReclaimDvpBuilder, RecoverDvpBuilder, RejectDvpBuilder,
+    SettleDvpBuilder,
 };
-use solana_sdk::{account::Account, signature::Signer};
+use solana_sdk::{account::Account, signature::Keypair, signature::Signer};
 
 use crate::{
     state_utils::{
@@ -28,13 +29,13 @@ use crate::{
     },
     utils::{
         assert_instruction_error, assert_program_error, get_token_balance, hook_extras_for_mint,
-        set_mint_2022_with_confidential_transfer, set_mint_2022_with_interest_bearing,
-        set_mint_2022_with_non_transferable, set_mint_2022_with_pausable,
-        set_mint_2022_with_permanent_delegate, set_mint_2022_with_scaled_ui_amount,
-        set_mint_2022_with_transfer_fee, set_mint_2022_with_transfer_hook,
-        set_token_2022_with_hook_account, set_token_2022_with_memo_required, setup_hook_mint,
-        TestContext, BLOCKED_MINT_EXTENSION, MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
+        malicious_hook_extras, set_mint_2022_with_confidential_transfer,
+        set_mint_2022_with_interest_bearing, set_mint_2022_with_non_transferable,
+        set_mint_2022_with_pausable, set_mint_2022_with_permanent_delegate,
+        set_mint_2022_with_scaled_ui_amount, set_mint_2022_with_transfer_fee,
+        set_mint_2022_with_transfer_hook, set_token_2022_with_hook_account,
+        set_token_2022_with_memo_required, setup_hook_mint, setup_malicious_hook_mint, TestContext,
+        BLOCKED_MINT_EXTENSION, MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
     },
 };
 
@@ -376,24 +377,26 @@ fn test_create_rejects_mint_program_owner_mismatch_b() {
 }
 
 // ---------------------------------------------------------------------
-// Defense-in-depth removed by design: extension validation runs only at
-// Create. The two tests below pin that behaviour by activating a
-// blocked extension *after* Create and confirming the unwind paths
-// (Settle, Reject) still drain funds — the property the design hinges
-// on so that funds can never get stranded.
+// Extension validation runs at Create AND Settle. The recovery
+// paths (Cancel/Reject/Reclaim/Recover) stay tolerant so a post-Create
+// mint mutation can never strand funds. The tests below pin both halves:
+// Settle re-validates and rejects a leg that gained a blocked extension
+// after Create (then the honest party recovers via Reject), while Reject
+// itself does no extension check.
 // ---------------------------------------------------------------------
 
-/// Create with bare T22 mints, then mutate `mint_a` to bear an
-/// `InterestBearingConfig` extension *after* Create. InterestBearing is
-/// on the deny-list (it would be rejected if Create re-ran) but it does
-/// not affect the raw `TransferChecked` amount path — UI scaling is
-/// applied client-side, the on-chain transfer amount is the raw value.
-///
-/// Settle must still succeed: the unwind paths intentionally skip the
-/// extension check so a post-Create extension activation can never
-/// strand the trade.
+/// The exploit: a party leaves their own leg unfunded
+/// until the counterparty commits, then closes the zero-supply mint and
+/// recreates it at the same address with a deny-listed extension (e.g.
+/// TransferFee, which short-delivers the leg). Settle must re-validate
+/// and reject. This test uses `InterestBearingConfig` — also deny-listed,
+/// and hitting the identical `validate_mint_extensions` branch that
+/// short-circuits before any balance/ATA/fee logic, so it guards the
+/// whole deny-list (TransferFee included), not just one extension. The
+/// honest counterparty then recovers both legs via Reject, which stays
+/// tolerant.
 #[test]
-fn test_settle_succeeds_after_post_create_interest_bearing_activation() {
+fn test_settle_rejects_post_create_blocked_extension() {
     let mut context = TestContext::new();
     let fixture = setup_dvp_with_programs(
         &mut context,
@@ -407,18 +410,45 @@ fn test_settle_succeeds_after_post_create_interest_bearing_activation() {
     assert_fund_b(&mut context, &fixture);
 
     // Swap mint_a in place to an InterestBearing-bearing T22 mint —
-    // would fail Create's deny-list now, but Settle does not re-check.
+    // deny-listed, so Settle re-validation must reject it.
     set_mint_2022_with_interest_bearing(
         &mut context,
         &fixture.mint_a,
         &fixture.settlement_authority.pubkey(),
     );
 
-    assert_settle_dvp(&mut context, &fixture);
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_program_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        BLOCKED_MINT_EXTENSION,
+    );
 
-    // Cross delivery occurred at exactly the agreed amounts.
-    assert_eq!(get_token_balance(&context, &fixture.user_a_ata_b), AMOUNT_B);
-    assert_eq!(get_token_balance(&context, &fixture.user_b_ata_a), AMOUNT_A);
+    // Funds are not stranded: Reject recovers both legs (InterestBearing
+    // does not block transfers, and Reject skips the extension check).
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_a);
+    assert_eq!(
+        get_token_balance(&context, &fixture.user_a_ata_a),
+        INITIAL_BALANCE
+    );
+    assert_eq!(
+        get_token_balance(&context, &fixture.user_b_ata_b),
+        INITIAL_BALANCE
+    );
     assert!(context.get_account(&fixture.swap_dvp).is_none());
 }
 
@@ -561,6 +591,80 @@ fn test_settle_with_hook_on_mint_a() {
     assert_eq!(get_token_balance(&context, &fixture.user_b_ata_a), AMOUNT_A);
 }
 
+/// A malicious hook mint declares the settlement authority as a
+/// signer-bearing hook extra so a generic resolver forwards its signature
+/// into the hook CPI, letting the hook drain the operator wallet during a
+/// routine Settle. The program strips the signer bit from every forwarded
+/// hook extra, so the hook's drain CPI is missing a required signer and
+/// the whole Settle reverts — the authority keeps its lamports.
+#[test]
+fn test_settle_rejects_signer_bearing_hook_extra() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    // Benign EAML first so the leg-A funding transfer (authority: user_a,
+    // not the settlement authority) doesn't trip the drain path.
+    setup_hook_on_mint_a(&mut context, &fixture);
+
+    assert_create_dvp(&mut context, &fixture);
+    fund_a_with_hook(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    // Swap in the malicious EAML: extra[0] = the settlement authority
+    // (signer), extra[1] = the attacker's drain target.
+    let attacker = Keypair::new();
+    let victim = fixture.settlement_authority.pubkey();
+    setup_malicious_hook_mint(&mut context, &fixture.mint_a, &victim, &attacker.pubkey());
+
+    let authority_before = context.get_account(&victim).unwrap().lamports;
+
+    let leg_a_extras = malicious_hook_extras(&fixture.mint_a, &victim, &attacker.pubkey());
+    let ix = SettleDvpBuilder::new()
+        .settlement_authority(victim)
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(leg_a_extras.len() as u8)
+        .add_remaining_accounts(&leg_a_extras)
+        .instruction();
+    let result = context.send(ix, &[&fixture.settlement_authority]);
+
+    // The hook's drain CPI fails without the signer bit, reverting Settle.
+    assert!(
+        result.is_err(),
+        "settle must revert when a hook tries to abuse a forwarded signer"
+    );
+    // No lamports left the authority, and the attacker got nothing.
+    assert_eq!(
+        context.get_account(&victim).unwrap().lamports,
+        authority_before,
+        "settlement authority wallet must be untouched"
+    );
+    assert_eq!(
+        context
+            .get_account(&attacker.pubkey())
+            .map(|a| a.lamports)
+            .unwrap_or(0),
+        0,
+        "attacker must not receive any drained lamports"
+    );
+    // DvP is untouched and can still be settled/cancelled normally.
+    assert!(context.get_account(&fixture.swap_dvp).is_some());
+}
+
 #[test]
 fn test_cancel_with_hook_on_mint_a() {
     let mut context = TestContext::new();
@@ -651,6 +755,73 @@ fn test_reject_with_hook_on_mint_a() {
     assert!(context.get_account(&fixture.swap_dvp).is_none());
 }
 
+/// The same signer-leak vector, exercised through the Cancel/Reject
+/// shared `refund_and_close_dvp` path. A malicious hook mint names the
+/// rejecting party (`user_a`) as a signer-bearing extra; the program
+/// strips the signer bit so the hook's drain CPI is missing a required
+/// signer and Reject reverts, leaving the rejecting user's wallet intact.
+#[test]
+fn test_reject_rejects_signer_bearing_hook_extra() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    // Benign EAML for funding (authorized by user_a), then the malicious
+    // EAML for the Reject under attack.
+    setup_hook_on_mint_a(&mut context, &fixture);
+
+    assert_create_dvp(&mut context, &fixture);
+    fund_a_with_hook(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    let attacker = Keypair::new();
+    let victim = fixture.user_a.pubkey();
+    setup_malicious_hook_mint(&mut context, &fixture.mint_a, &victim, &attacker.pubkey());
+
+    let victim_before = context.get_account(&victim).unwrap().lamports;
+
+    let leg_a_extras = malicious_hook_extras(&fixture.mint_a, &victim, &attacker.pubkey());
+    let ix = RejectDvpBuilder::new()
+        .signer(victim)
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(leg_a_extras.len() as u8)
+        .add_remaining_accounts(&leg_a_extras)
+        .instruction();
+    let result = context.send(ix, &[&fixture.user_a]);
+
+    assert!(
+        result.is_err(),
+        "reject must revert when a hook tries to abuse a forwarded signer"
+    );
+    assert_eq!(
+        context.get_account(&victim).unwrap().lamports,
+        victim_before,
+        "rejecting user wallet must be untouched"
+    );
+    assert_eq!(
+        context
+            .get_account(&attacker.pubkey())
+            .map(|a| a.lamports)
+            .unwrap_or(0),
+        0,
+        "attacker must not receive any drained lamports"
+    );
+    // Reject reverted, so the DvP is still open.
+    assert!(context.get_account(&fixture.swap_dvp).is_some());
+}
+
 #[test]
 fn test_reclaim_with_hook_on_mint_a() {
     let mut context = TestContext::new();
@@ -685,6 +856,156 @@ fn test_reclaim_with_hook_on_mint_a() {
     assert_eq!(
         get_token_balance(&context, &fixture.user_a_ata_a),
         INITIAL_BALANCE
+    );
+}
+
+/// The same signer-leak vector, but on the depositor recovery path: a
+/// malicious hook mint names the reclaiming party (`user_a`) as a
+/// signer-bearing extra so a generic resolver forwards their signature
+/// into the hook CPI, letting the hook drain the depositor's wallet
+/// during a routine Reclaim. The program strips the signer bit, so the
+/// drain CPI is missing a required signer and Reclaim reverts.
+#[test]
+fn test_reclaim_rejects_signer_bearing_hook_extra() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    // Benign EAML for funding (authorized by user_a, before the malicious
+    // swap-in), then the malicious EAML for the Reclaim under attack.
+    setup_hook_on_mint_a(&mut context, &fixture);
+
+    assert_create_dvp(&mut context, &fixture);
+    fund_a_with_hook(&mut context, &fixture);
+
+    let attacker = Keypair::new();
+    let victim = fixture.user_a.pubkey();
+    setup_malicious_hook_mint(&mut context, &fixture.mint_a, &victim, &attacker.pubkey());
+
+    let victim_before = context.get_account(&victim).unwrap().lamports;
+
+    let leg_a_extras = malicious_hook_extras(&fixture.mint_a, &victim, &attacker.pubkey());
+    let ix = ReclaimDvpBuilder::new()
+        .signer(victim)
+        .swap_dvp(fixture.swap_dvp)
+        .mint(fixture.mint_a)
+        .dvp_source_ata(fixture.dvp_ata_a)
+        .signer_dest_ata(fixture.user_a_ata_a)
+        .token_program(fixture.token_program_a)
+        .memo_program(MEMO_PROGRAM_ID)
+        .add_remaining_accounts(&leg_a_extras)
+        .instruction();
+    let result = context.send(ix, &[&fixture.user_a]);
+
+    assert!(
+        result.is_err(),
+        "reclaim must revert when a hook tries to abuse a forwarded signer"
+    );
+    assert_eq!(
+        context.get_account(&victim).unwrap().lamports,
+        victim_before,
+        "depositor wallet must be untouched"
+    );
+    assert_eq!(
+        context
+            .get_account(&attacker.pubkey())
+            .map(|a| a.lamports)
+            .unwrap_or(0),
+        0,
+        "attacker must not receive any drained lamports"
+    );
+}
+
+/// Recreate the escrow ATA for the (now closed) SwapDvp wallet so a late
+/// deposit can land in it, as the funding-race attack does.
+fn recreate_dead_escrow_a(context: &mut TestContext, fixture: &crate::state_utils::DvpFixture) {
+    let ix = spl_associated_token_account::instruction::create_associated_token_account(
+        &context.payer.pubkey(),
+        &fixture.swap_dvp,
+        &fixture.mint_a,
+        &fixture.token_program_a,
+    );
+    context.send(ix, &[]).expect("recreate dead escrow ATA");
+}
+
+/// The same signer-leak vector on the RecoverDvp path. RecoverDvp also
+/// forwards hook extras into its drain `TransferChecked` CPI, so the
+/// signer stripping must hold there too. A late deposit lands in a
+/// recreated escrow of a closed DvP; a malicious hook mint then names the
+/// recovering party as a signer-bearing extra so a generic resolver would
+/// forward their signature into the hook CPI. The program strips the
+/// signer bit, so the drain CPI is missing a required signer and
+/// RecoverDvp reverts, leaving the recovering user's wallet intact.
+#[test]
+fn test_recover_dvp_rejects_signer_bearing_hook_extra() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    // Benign EAML so the late funding transfer (authority: user_a) works,
+    // then the malicious EAML for the RecoverDvp under attack.
+    setup_hook_on_mint_a(&mut context, &fixture);
+
+    assert_create_dvp(&mut context, &fixture);
+    // Reject before funding closes the DvP with empty escrows (no hook
+    // CPI), giving RecoverDvp its post-close precondition.
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_b);
+
+    // Recreate the dead escrow and let user_a's in-flight funding land in
+    // it, so RecoverDvp has a non-zero balance to drain via the hook.
+    recreate_dead_escrow_a(&mut context, &fixture);
+    fund_a_with_hook(&mut context, &fixture);
+
+    // Swap in the malicious EAML: extra[0] = the recovering party
+    // (signer), extra[1] = the attacker's drain target.
+    let attacker = Keypair::new();
+    let victim = fixture.user_a.pubkey();
+    setup_malicious_hook_mint(&mut context, &fixture.mint_a, &victim, &attacker.pubkey());
+
+    let victim_before = context.get_account(&victim).unwrap().lamports;
+
+    let leg_a_extras = malicious_hook_extras(&fixture.mint_a, &victim, &attacker.pubkey());
+    let ix = RecoverDvpBuilder::new()
+        .signer(victim)
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint(fixture.mint_a)
+        .dvp_escrow_ata(fixture.dvp_ata_a)
+        .signer_dest_ata(fixture.user_a_ata_a)
+        .token_program(fixture.token_program_a)
+        .memo_program(MEMO_PROGRAM_ID)
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .nonce(fixture.nonce)
+        .add_remaining_accounts(&leg_a_extras)
+        .instruction();
+    let result = context.send(ix, &[&fixture.user_a]);
+
+    assert!(
+        result.is_err(),
+        "recover must revert when a hook tries to abuse a forwarded signer"
+    );
+    assert_eq!(
+        context.get_account(&victim).unwrap().lamports,
+        victim_before,
+        "recovering user wallet must be untouched"
+    );
+    assert_eq!(
+        context
+            .get_account(&attacker.pubkey())
+            .map(|a| a.lamports)
+            .unwrap_or(0),
+        0,
+        "attacker must not receive any drained lamports"
     );
 }
 
