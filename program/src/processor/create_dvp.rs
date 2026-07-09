@@ -7,7 +7,9 @@ use crate::{
         verify_system_program, verify_token_program,
     },
     processor::shared::pda_utils::create_pda_account,
-    processor::shared::token_utils::{validate_mint_extensions, verify_canonical_ata},
+    processor::shared::token_utils::{
+        validate_mint_extensions, verify_canonical_ata, verify_escrow_not_preloaded,
+    },
     require, require_len,
     state::swap_dvp::{SwapDvp, MAX_REF_STRING_LEN, NONCE_TOMBSTONE_SEED, SWAP_DVP_SEED},
 };
@@ -124,6 +126,17 @@ pub fn process_create_dvp(
         ProgramError::InvalidSeeds
     );
 
+    // Resolve the destination defaults here (the consent point) so
+    // Settle never branches: delivery always goes to the stored
+    // destination's canonical ATA.
+    let user_a_settlement_destination = args.user_a_settlement_destination.unwrap_or(args.user_a);
+    let user_b_settlement_destination = args.user_b_settlement_destination.unwrap_or(args.user_b);
+    require!(
+        user_a_settlement_destination != expected_swap_dvp
+            && user_b_settlement_destination != expected_swap_dvp,
+        DvpSwapProgramError::SettlementDestinationIsSwapDvp
+    );
+
     // Nonce tombstone, derived from the SwapDvp address so it's 1:1 with
     // this trade's seeds. It's created below and never closed, so a
     // non-system owner here means the nonce was already used — reject
@@ -170,17 +183,21 @@ pub fn process_create_dvp(
         expiry_timestamp: args.expiry_timestamp,
         nonce: args.nonce,
         ref_string: args.ref_string,
-        // Resolve the destination defaults here (the consent point) so
-        // Settle never branches: delivery always goes to the stored
-        // destination's canonical ATA.
-        user_a_settlement_destination: args.user_a_settlement_destination.unwrap_or(args.user_a),
-        user_b_settlement_destination: args.user_b_settlement_destination.unwrap_or(args.user_b),
+        user_a_settlement_destination,
+        user_b_settlement_destination,
         earliest_settlement_timestamp: args.earliest_settlement_timestamp,
     };
     let (nonce_bytes, bump_bytes) = dvp.seed_buffers();
     let swap_dvp_seeds = dvp.signing_seeds(&nonce_bytes, &bump_bytes);
 
     let rent = Rent::get()?;
+    // A preload above the rent reserve would be adopted into the live
+    // PDA and swept to the closer at the terminal instructions.
+    // Up to the reserve is harmless: the payer tops up to exactly it.
+    require!(
+        swap_dvp_info.lamports() <= rent.try_minimum_balance(SwapDvp::LEN)?,
+        DvpSwapProgramError::SwapDvpPreloadedWithLamports
+    );
     create_pda_account(
         payer_info,
         &rent,
@@ -226,6 +243,11 @@ pub fn process_create_dvp(
         token_program: token_program_b_info,
     }
     .invoke()?;
+
+    // A non-native escrow must start with no lamports beyond rent, or
+    // the close paths would sweep the excess to the closer.
+    verify_escrow_not_preloaded(dvp_ata_a_info, &rent)?;
+    verify_escrow_not_preloaded(dvp_ata_b_info, &rent)?;
 
     let dvp_data = dvp.to_bytes();
     let mut data_slice = swap_dvp_info.try_borrow_mut()?;

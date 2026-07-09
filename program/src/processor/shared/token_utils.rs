@@ -7,6 +7,7 @@ use pinocchio::{
     cpi::{invoke_signed_with_bounds, Signer},
     error::ProgramError,
     instruction::{InstructionAccount, InstructionView},
+    sysvars::rent::Rent,
     ProgramResult,
 };
 use pinocchio_token::{state::Mint as TokenMint, state::TokenAccount, ID as TOKEN_PROGRAM_ID};
@@ -56,6 +57,40 @@ pub fn verify_canonical_ata(
     )
     .0;
     require!(ata_info.address() == &expected, ProgramError::InvalidSeeds);
+    Ok(())
+}
+
+/// Require that a non-native escrow holds exactly its rent-exempt
+/// minimum and no more. For a non-WSOL leg the token balance lives in
+/// the account's data, so any lamports beyond rent are raw SOL that
+/// token accounting ignores; because the close paths pay out the
+/// escrow's full lamport balance to whoever closes the DvP, that excess
+/// must not be present. Call this after the ATA create CPI so it sees
+/// both a pre-created ATA already holding extra SOL and lamports parked
+/// at the address before creation (the ATA program only tops up the rent
+/// shortfall). Native (WSOL) escrows are exempt: there, lamports above
+/// rent are the deposit itself, adopted as token balance by SyncNative.
+#[inline(always)]
+pub fn verify_escrow_not_preloaded(info: &AccountView, rent: &Rent) -> ProgramResult {
+    let (data_len, is_native) = {
+        let data = info.try_borrow()?;
+        if info.owned_by(&TOKEN_PROGRAM_ID) {
+            let account = unsafe { TokenAccount::from_bytes_unchecked(&data) };
+            (data.len(), account.is_native())
+        } else if info.owned_by(&TOKEN_2022_PROGRAM_ID) {
+            let account = unsafe { Token2022Account::from_bytes_unchecked(&data) };
+            (data.len(), account.is_native())
+        } else {
+            return Err(ProgramError::InvalidAccountOwner);
+        }
+    };
+    if is_native {
+        return Ok(());
+    }
+    require!(
+        info.lamports() == rent.try_minimum_balance(data_len)?,
+        DvpSwapProgramError::EscrowPreloadedWithLamports
+    );
     Ok(())
 }
 
@@ -155,14 +190,16 @@ pub fn get_mint_decimals(mint_info: &AccountView) -> Result<u8, ProgramError> {
 /// exceed the per-CPI account cap (`MAX_HOOK_REMAINING_ACCOUNTS`) or
 /// to error unconditionally, and a `MintCloseAuthority` can close a
 /// zero-supply mint and recreate it at the same address with a
-/// different extension set (e.g. a transfer fee), changing transfer
-/// behavior after Create since terminal paths bind only the mint
-/// address and token program, not the extension set. Traders are
-/// expected to vet the mints they agree to transact in; mint-authority
-/// trust is not a problem the program can solve.
+/// different extension set. Settle re-runs this check so a leg recreated
+/// with a deny-listed extension (e.g. a transfer fee) can't reach a
+/// short "successful" settlement; the recovery paths stay tolerant so
+/// funds are never stranded. Traders are still expected to vet the mints
+/// they agree to transact in; mint-authority trust is not a problem the
+/// program can solve.
 ///
-/// Called only at CreateDvp. Unwind paths skip this check so funds
-/// remain recoverable if extension parameters change post-Create.
+/// Called at CreateDvp and SettleDvp. The recovery paths (Cancel,
+/// Reject, Reclaim, Recover) skip this check so funds remain recoverable
+/// if extension parameters change post-Create.
 /// Legacy SPL Token mints only get a mint-size check.
 #[inline(always)]
 pub fn validate_mint_extensions(mint_info: &AccountView) -> ProgramResult {
@@ -280,9 +317,9 @@ pub fn transfer_checked_cpi(
     );
     let total = 4 + remaining.len();
 
-    // Account metas: 4 fixed + N trailing. Trailing forwards each
-    // remaining account's writable/signer flags as-is so the hook
-    // program receives them with the flags the client declared.
+    // Account metas: 4 fixed + N trailing. Forward each extra's writable
+    // flag but never its signer bit. The only CPI signer is the SwapDvp
+    // PDA (slot 3); extras are always passed as non-signers.
     const UNINIT_META: MaybeUninit<InstructionAccount> = MaybeUninit::uninit();
     let mut metas = [UNINIT_META; MAX_TRANSFER_CHECKED_ACCOUNTS];
     metas[0].write(InstructionAccount::writable(from.address()));
@@ -290,7 +327,12 @@ pub fn transfer_checked_cpi(
     metas[2].write(InstructionAccount::writable(to.address()));
     metas[3].write(InstructionAccount::readonly_signer(authority.address()));
     for (i, acc) in remaining.iter().enumerate() {
-        metas[4 + i].write(InstructionAccount::from(acc));
+        let meta = if acc.is_writable() {
+            InstructionAccount::writable(acc.address())
+        } else {
+            InstructionAccount::readonly(acc.address())
+        };
+        metas[4 + i].write(meta);
     }
     // SAFETY: the first `total` slots were just initialised above.
     let metas_slice: &[InstructionAccount] =

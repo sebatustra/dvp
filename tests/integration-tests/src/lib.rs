@@ -12,6 +12,8 @@ mod test_create_dvp;
 #[cfg(test)]
 mod test_reclaim_dvp;
 #[cfg(test)]
+mod test_recover_dvp;
+#[cfg(test)]
 mod test_reject_dvp;
 #[cfg(test)]
 mod test_settle_dvp;

@@ -66,6 +66,14 @@ pub const SETTLEMENT_AUTHORITY_IS_PARTY: u32 =
     DvpSwapProgramError::SettlementAuthorityIsParty as u32;
 pub const NONCE_ALREADY_USED: u32 = DvpSwapProgramError::NonceAlreadyUsed as u32;
 pub const REF_STRING_TOO_LONG: u32 = DvpSwapProgramError::RefStringTooLong as u32;
+pub const DVP_STILL_OPEN: u32 = DvpSwapProgramError::DvpStillOpen as u32;
+pub const DVP_NEVER_CREATED: u32 = DvpSwapProgramError::DvpNeverCreated as u32;
+pub const ESCROW_PRELOADED_WITH_LAMPORTS: u32 =
+    DvpSwapProgramError::EscrowPreloadedWithLamports as u32;
+pub const SETTLEMENT_DESTINATION_IS_SWAP_DVP: u32 =
+    DvpSwapProgramError::SettlementDestinationIsSwapDvp as u32;
+pub const SWAP_DVP_PRELOADED_WITH_LAMPORTS: u32 =
+    DvpSwapProgramError::SwapDvpPreloadedWithLamports as u32;
 
 const MIN_LAMPORTS: u64 = 500_000_000;
 
@@ -605,6 +613,72 @@ pub fn hook_extras_for_mint(mint: &Pubkey) -> Vec<solana_sdk::instruction::Accou
 
     let validation_pda = get_extra_account_metas_address(mint, &HOOK_FIXTURE_PROGRAM_ID);
     vec![
+        AccountMeta::new_readonly(solana_program::system_program::ID, false),
+        AccountMeta::new_readonly(HOOK_FIXTURE_PROGRAM_ID, false),
+        AccountMeta::new_readonly(validation_pda, false),
+    ]
+}
+
+/// Like [`setup_hook_mint`], but the `ExtraAccountMetaList` declares two
+/// extras aimed at draining a wallet: `victim` as a **signer-bearing**
+/// static extra and `attacker` as a writable one. A generic client
+/// resolver faithfully marks `victim` as a signer; the swap program
+/// strips that bit before forwarding to the hook.
+pub fn setup_malicious_hook_mint(
+    context: &mut TestContext,
+    mint: &Pubkey,
+    victim: &Pubkey,
+    attacker: &Pubkey,
+) {
+    use spl_tlv_account_resolution::{account::ExtraAccountMeta, state::ExtraAccountMetaList};
+    use spl_transfer_hook_interface::{
+        get_extra_account_metas_address, instruction::ExecuteInstruction,
+    };
+
+    set_mint_2022_with_transfer_hook(
+        context,
+        mint,
+        &HOOK_FIXTURE_PROGRAM_ID,
+        &context.payer.pubkey(),
+    );
+
+    let validation_pda = get_extra_account_metas_address(mint, &HOOK_FIXTURE_PROGRAM_ID);
+    // victim: signer + writable (a System transfer's source needs both) —
+    // the signer bit is what the swap program strips. attacker: writable sink.
+    // system program: so the hook can CPI it to move the drained lamports.
+    let extras = vec![
+        ExtraAccountMeta::new_with_pubkey(victim, true, true).unwrap(),
+        ExtraAccountMeta::new_with_pubkey(attacker, false, true).unwrap(),
+        ExtraAccountMeta::new_with_pubkey(&solana_program::system_program::ID, false, false)
+            .unwrap(),
+    ];
+    let size = ExtraAccountMetaList::size_of(extras.len()).unwrap();
+    let mut data = vec![0u8; size];
+    ExtraAccountMetaList::init::<ExecuteInstruction>(&mut data, &extras).unwrap();
+    write_account(
+        context,
+        &validation_pda,
+        data,
+        HOOK_FIXTURE_PROGRAM_ID,
+        1_000_000_000,
+    );
+}
+
+/// Trailing accounts for a mint set up via [`setup_malicious_hook_mint`]:
+/// victim (marked writable so the client resolver would forward its
+/// runtime signer bit), attacker, hook program, validation PDA.
+pub fn malicious_hook_extras(
+    mint: &Pubkey,
+    victim: &Pubkey,
+    attacker: &Pubkey,
+) -> Vec<solana_sdk::instruction::AccountMeta> {
+    use solana_sdk::instruction::AccountMeta;
+    use spl_transfer_hook_interface::get_extra_account_metas_address;
+
+    let validation_pda = get_extra_account_metas_address(mint, &HOOK_FIXTURE_PROGRAM_ID);
+    vec![
+        AccountMeta::new(*victim, false),
+        AccountMeta::new(*attacker, false),
         AccountMeta::new_readonly(solana_program::system_program::ID, false),
         AccountMeta::new_readonly(HOOK_FIXTURE_PROGRAM_ID, false),
         AccountMeta::new_readonly(validation_pda, false),

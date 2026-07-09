@@ -2,7 +2,8 @@ use crate::{
     error::DvpSwapProgramError,
     processor::shared::account_check::{verify_account_owner, verify_signer},
     processor::shared::token_utils::{
-        get_mint_decimals, get_token_account_balance, transfer_checked_cpi, verify_canonical_ata,
+        get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
+        validate_mint_extensions, verify_canonical_ata,
     },
     processor::shared::utils::split_leg_remaining_accounts,
     require,
@@ -37,10 +38,15 @@ const FIXED_ACCOUNTS_LEN: usize = 13;
 /// This ensures the counterparty receives exactly the agreed amount and
 /// cannot capture an over-deposit.
 ///
-/// Extension validation is **not** performed here — Create is the
-/// consent point. Settle must remain available even if a mint's
-/// extension parameters change post-Create so the trade can always
-/// reach its terminal state.
+/// Mint extensions are **re-validated** here. Create is the consent
+/// point, but a leg left unfunded until the counterparty commits can be
+/// closed (zero supply) and recreated at the same address with a
+/// deny-listed extension — e.g. `TransferFee`, which would deliver a
+/// short leg while settlement still reported success. Re-checking binds
+/// Settle to the same accounting guarantees Create enforced. This does
+/// not strand funds: if a mint mutated out from under the agreement,
+/// Settle rejects and the honest party recovers via Reject/Reclaim,
+/// which stay tolerant so a leg is never locked.
 ///
 /// # Account Layout
 /// 0.  `[signer, writable]` settlement_authority - Must equal `dvp.settlement_authority`; receives closed-account rent
@@ -102,6 +108,12 @@ pub fn process_settle_dvp(
             && token_program_b_info.address() == &dvp.token_program_b,
         ProgramError::IncorrectProgramId
     );
+
+    // Re-check both mints against the Create deny-list: a leg recreated
+    // with a blocked extension (e.g. TransferFee) after Create must not
+    // reach a "successful" short settlement. Recovery paths stay tolerant.
+    validate_mint_extensions(mint_a_info)?;
+    validate_mint_extensions(mint_b_info)?;
 
     let now = Clock::get()?.unix_timestamp;
     require!(now <= dvp.expiry_timestamp, DvpSwapProgramError::DvpExpired);

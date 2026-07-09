@@ -6,6 +6,7 @@ pub enum DvpSwapInstructionDiscriminators {
     SettleDvp = 2,
     CancelDvp = 3,
     RejectDvp = 4,
+    RecoverDvp = 5,
 }
 
 impl TryFrom<u8> for DvpSwapInstructionDiscriminators {
@@ -18,6 +19,7 @@ impl TryFrom<u8> for DvpSwapInstructionDiscriminators {
             2 => Ok(Self::SettleDvp),
             3 => Ok(Self::CancelDvp),
             4 => Ok(Self::RejectDvp),
+            5 => Ok(Self::RecoverDvp),
             _ => Err(()),
         }
     }
