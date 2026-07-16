@@ -281,6 +281,12 @@
         "kind": "errorNode",
         "message": "swap_dvp preloaded with lamports above its rent reserve",
         "name": "swapDvpPreloadedWithLamports"
+      },
+      {
+        "code": 21,
+        "kind": "errorNode",
+        "message": "recipient ATA owner or mint does not match",
+        "name": "recipientAtaMismatch"
       }
     ],
     "instructions": [

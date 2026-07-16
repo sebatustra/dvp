@@ -3,7 +3,8 @@ use pinocchio_token_2022::instructions::CloseAccount;
 
 use crate::{
     processor::shared::token_utils::{
-        get_mint_decimals, get_token_account_balance, transfer_checked_cpi, verify_canonical_ata,
+        get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
+        verify_ata_recipient_if_initialized, verify_canonical_ata,
     },
     require,
     state::swap_dvp::SwapDvp,
@@ -47,11 +48,13 @@ pub fn refund_and_close_dvp(
         ProgramError::IncorrectProgramId
     );
 
-    // Address-only validation: an unfunded leg's user ATA can be
-    // uninitialized; the canonical pubkey is well-defined regardless.
-    // If a leg is funded the Transfer below fails naturally on an
-    // uninitialized destination. Note: refund pairing — each user gets
-    // their *own* mint back (not the cross used at Settle).
+    // An unfunded leg's user ATA can be uninitialized; the canonical
+    // pubkey is well-defined regardless, and the owner/mint check below
+    // is skipped when the account is absent. If a leg is funded the
+    // account exists, so its owner/mint must still match, and the
+    // Transfer fails naturally on an uninitialized destination. Note:
+    // refund pairing — each user gets their *own* mint back (not the
+    // cross used at Settle).
     // dvp_ata_a: DvP PDA's escrow for mint_a (asset escrow).
     verify_canonical_ata(
         dvp_ata_a_info,
@@ -73,6 +76,7 @@ pub fn refund_and_close_dvp(
         &dvp.mint_a,
         token_program_a_info,
     )?;
+    verify_ata_recipient_if_initialized(user_a_ata_a_info, &dvp.user_a, &dvp.mint_a)?;
     // user_b_ata_b: buyer's ATA for mint_b — refund destination if cash leg was funded.
     verify_canonical_ata(
         user_b_ata_b_info,
@@ -80,6 +84,7 @@ pub fn refund_and_close_dvp(
         &dvp.mint_b,
         token_program_b_info,
     )?;
+    verify_ata_recipient_if_initialized(user_b_ata_b_info, &dvp.user_b, &dvp.mint_b)?;
 
     let (nonce_bytes, bump_bytes) = dvp.seed_buffers();
     let swap_dvp_seeds = dvp.signing_seeds(&nonce_bytes, &bump_bytes);

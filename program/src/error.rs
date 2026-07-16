@@ -107,6 +107,14 @@ pub enum DvpSwapProgramError {
     /// balance to the closer, so adopting a preload would misdirect it.
     #[error("swap_dvp preloaded with lamports above its rent reserve")]
     SwapDvpPreloadedWithLamports,
+
+    /// (21) A settlement recipient or refund ATA is canonical by address
+    /// but its token-account owner or mint no longer matches the expected
+    /// wallet/mint. A legacy SPL Token account can be reassigned via
+    /// SetAuthority without changing its ATA pubkey, so address alone does
+    /// not authenticate the recipient.
+    #[error("recipient ATA owner or mint does not match")]
+    RecipientAtaMismatch,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

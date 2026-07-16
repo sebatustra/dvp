@@ -3,7 +3,8 @@ use crate::{
     processor::shared::account_check::{verify_account_owner, verify_signer},
     processor::shared::token_utils::{
         get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
-        validate_mint_extensions, verify_canonical_ata,
+        validate_mint_extensions, verify_ata_recipient, verify_ata_recipient_if_initialized,
+        verify_canonical_ata,
     },
     processor::shared::utils::split_leg_remaining_accounts,
     require,
@@ -154,12 +155,20 @@ pub fn process_settle_dvp(
         token_program_b_info,
     )?;
     // user_a_destination_ata_b: destination_a's ATA for mint_b —
-    // receives the cash leg.
+    // receives the cash leg. Delivery always fires, so require the
+    // account still belong to the destination: a canonical address alone
+    // doesn't prove it, since a legacy SPL account can be owner-reassigned
+    // without changing its ATA pubkey.
     verify_canonical_ata(
         user_a_destination_ata_b_info,
         &dvp.user_a_settlement_destination,
         &dvp.mint_b,
         token_program_b_info,
+    )?;
+    verify_ata_recipient(
+        user_a_destination_ata_b_info,
+        &dvp.user_a_settlement_destination,
+        &dvp.mint_b,
     )?;
     // user_b_destination_ata_a: destination_b's ATA for mint_a —
     // receives the asset leg.
@@ -169,16 +178,22 @@ pub fn process_settle_dvp(
         &dvp.mint_a,
         token_program_a_info,
     )?;
+    verify_ata_recipient(
+        user_b_destination_ata_a_info,
+        &dvp.user_b_settlement_destination,
+        &dvp.mint_a,
+    )?;
     // user_a_ata_a: seller's ATA for mint_a — surplus refund destination
-    // for the asset leg. Address-only validation: only touched if
-    // surplus > 0, in which case the Transfer CPI fails naturally on an
-    // uninitialized destination.
+    // for the asset leg. Only touched if surplus > 0; tolerated when
+    // uninitialized, but if it exists its owner/mint must still match so
+    // a reassigned account can't capture the surplus.
     verify_canonical_ata(
         user_a_ata_a_info,
         &dvp.user_a,
         &dvp.mint_a,
         token_program_a_info,
     )?;
+    verify_ata_recipient_if_initialized(user_a_ata_a_info, &dvp.user_a, &dvp.mint_a)?;
     // user_b_ata_b: buyer's ATA for mint_b — surplus refund destination
     // for the cash leg. Same address-only treatment as above.
     verify_canonical_ata(
@@ -187,6 +202,7 @@ pub fn process_settle_dvp(
         &dvp.mint_b,
         token_program_b_info,
     )?;
+    verify_ata_recipient_if_initialized(user_b_ata_b_info, &dvp.user_b, &dvp.mint_b)?;
 
     // Both legs must hold *at least* their target amount. Any balance
     // above the target is treated as an over-deposit by the leg's
