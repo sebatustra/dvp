@@ -16,7 +16,7 @@ use crate::{
         INITIAL_BALANCE, REF_STRING,
     },
     utils::{
-        assert_instruction_error, assert_program_error, get_token_balance, TestContext,
+        assert_instruction_error, assert_program_error, get_token_balance, set_mint, TestContext,
         DVP_NEVER_CREATED, DVP_STILL_OPEN, MEMO_PROGRAM_ID, NONCE_ALREADY_USED, SIGNER_NOT_PARTY,
         TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
     },
@@ -342,6 +342,91 @@ fn test_recover_dvp_token_2022_leg() {
         INITIAL_BALANCE
     );
     assert!(context.get_account(&fixture.dvp_ata_b).is_none());
+}
+
+/// Recovery binds the token program to the escrow account, not to the
+/// mint's current owner. A T22 mint closed and recreated under legacy
+/// SPL after the late deposit landed must not strand it: the deposit
+/// sits in the T22 escrow, so recovery with the T22 program still works.
+#[test]
+fn test_recover_dvp_after_mint_recreated_under_other_token_program() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    assert_create_dvp(&mut context, &fixture);
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_b);
+
+    // Late-deposit setup: recreate the dead T22 escrow and land the
+    // victim's in-flight transfer in it.
+    recreate_escrow(&mut context, &fixture.user_b, &fixture, &fixture.mint_a);
+    assert_fund_a(&mut context, &fixture);
+    assert_eq!(get_token_balance(&context, &fixture.dvp_ata_a), AMOUNT_A);
+
+    // The counterparty closes the zero-supply mint and recreates it
+    // under legacy SPL Token.
+    set_mint(&mut context, &fixture.mint_a, &TOKEN_PROGRAM_ID);
+
+    // Recovery with the escrow's own token program still succeeds.
+    let ix = recover_ix(
+        &fixture,
+        &fixture.user_a.pubkey(),
+        &fixture.mint_a,
+        &fixture.dvp_ata_a,
+        &fixture.user_a_ata_a,
+    );
+    context.send(ix, &[&fixture.user_a]).expect("RecoverDvp");
+
+    assert_eq!(
+        get_token_balance(&context, &fixture.user_a_ata_a),
+        INITIAL_BALANCE
+    );
+    assert!(context.get_account(&fixture.dvp_ata_a).is_none());
+}
+
+/// The escrow/token-program pair must be consistent: passing the
+/// drifted mint's current owner with the T22 escrow derives a different
+/// ATA address and is rejected, so recovery can't silently switch
+/// namespaces.
+#[test]
+fn test_recover_dvp_rejects_token_program_not_matching_escrow() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+    assert_create_dvp(&mut context, &fixture);
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_b);
+
+    recreate_escrow(&mut context, &fixture.user_b, &fixture, &fixture.mint_a);
+    assert_fund_a(&mut context, &fixture);
+    set_mint(&mut context, &fixture.mint_a, &TOKEN_PROGRAM_ID);
+
+    let ix = RecoverDvpBuilder::new()
+        .signer(fixture.user_a.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .nonce_tombstone(fixture.nonce_tombstone)
+        .mint(fixture.mint_a)
+        .dvp_escrow_ata(fixture.dvp_ata_a)
+        .signer_dest_ata(fixture.user_a_ata_a)
+        .token_program(TOKEN_PROGRAM_ID)
+        .memo_program(MEMO_PROGRAM_ID)
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .user_a(fixture.user_a.pubkey())
+        .user_b(fixture.user_b.pubkey())
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .nonce(fixture.nonce)
+        .instruction();
+    assert!(
+        context.send(ix, &[&fixture.user_a]).is_err(),
+        "legacy program with the T22 escrow must be rejected"
+    );
 }
 
 /// While the SwapDvp is live, ReclaimDvp is the recovery path and

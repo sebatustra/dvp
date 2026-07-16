@@ -371,7 +371,7 @@ pub enum DvpSwapProgramInstruction {
     ))]
     #[codama(account(
         name = "token_program",
-        docs = "SPL Token or Token-2022 program; must own mint"
+        docs = "SPL Token or Token-2022 program; must own dvp_escrow_ata (the program the escrow was created under, regardless of the mint's current owner)"
     ))]
     #[codama(account(
         name = "memo_program",

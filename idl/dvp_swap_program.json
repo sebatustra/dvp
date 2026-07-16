@@ -1121,7 +1121,7 @@
           },
           {
             "docs": [
-              "SPL Token or Token-2022 program; must own mint"
+              "SPL Token or Token-2022 program; must own dvp_escrow_ata (the program the escrow was created under, regardless of the mint's current owner)"
             ],
             "isSigner": false,
             "isWritable": false,

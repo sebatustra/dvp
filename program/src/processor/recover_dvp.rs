@@ -45,7 +45,9 @@ const INSTRUCTION_DATA_LEN: usize = 32 * 5 + 8;
 /// ATA, then closes the escrow (rent to the signer) so it stops
 /// trapping deposits. Only valid once the SwapDvp is closed; Reclaim is
 /// the live-trade path. No extension validation, same policy as the
-/// other unwind paths.
+/// other unwind paths. The token program is bound to the escrow account
+/// rather than the mint's current owner, so recovery survives a
+/// post-close mint recreation under the other token program.
 ///
 /// # Account Layout
 /// 0. `[signer, writable]` signer - Depositor of the leg being recovered; receives the closed escrow's rent
@@ -54,7 +56,7 @@ const INSTRUCTION_DATA_LEN: usize = 32 * 5 + 8;
 /// 3. `[]` mint - Mint of the leg being recovered
 /// 4. `[writable]` dvp_escrow_ata - Recreated escrow ATA (drained, then closed)
 /// 5. `[writable]` signer_dest_ata - Signer's canonical ATA for the leg's mint (caller must pre-initialize if the escrow has a non-zero balance)
-/// 6. `[]` token_program - SPL Token or Token-2022; must own `mint`
+/// 6. `[]` token_program - SPL Token or Token-2022; must own `dvp_escrow_ata`
 /// 7. `[]` memo_program - SPL Memo program; only used if signer_dest_ata requires a memo
 ///
 /// Trailing accounts (variable): transfer-hook extras forwarded to the
@@ -104,11 +106,7 @@ pub fn process_recover_dvp(
         mint_info.address() == leg_mint,
         ProgramError::InvalidAccountData
     );
-    // No stored state to compare against: bind the token program to the
-    // mint's current owner. The escrow ATA derivation below commits to
-    // the same (mint, token program) pair.
     verify_token_program(token_program_info)?;
-    verify_account_owner(mint_info, token_program_info.address())?;
 
     let nonce_bytes = args.nonce.to_le_bytes();
     let (expected_swap_dvp, bump) = Address::find_program_address(
@@ -152,12 +150,20 @@ pub fn process_recover_dvp(
 
     // dvp_escrow_ata: the dead PDA's canonical escrow for the leg's
     // mint, the only address the documented funding path deposits to.
+    // The token program is bound to the escrow account, not to the
+    // mint's current owner: a closed T22 mint can be recreated under
+    // legacy SPL after the deposit landed, and following the drift
+    // would re-derive a different ATA and strand the real escrow. The
+    // escrow authenticates its own namespace: only the ATA program can
+    // create an account at this derived address, and it sets the owner
+    // to the token program used in the derivation.
     verify_canonical_ata(
         dvp_escrow_ata_info,
         swap_dvp_info.address(),
         leg_mint,
         token_program_info,
     )?;
+    verify_account_owner(dvp_escrow_ata_info, token_program_info.address())?;
     // signer_dest_ata: the depositor's ATA for the leg's mint.
     verify_canonical_ata(
         signer_dest_ata_info,
