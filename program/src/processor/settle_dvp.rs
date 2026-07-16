@@ -38,15 +38,16 @@ const FIXED_ACCOUNTS_LEN: usize = 13;
 /// This ensures the counterparty receives exactly the agreed amount and
 /// cannot capture an over-deposit.
 ///
-/// Mint extensions are **re-validated** here. Create is the consent
-/// point, but a leg left unfunded until the counterparty commits can be
-/// closed (zero supply) and recreated at the same address with a
-/// deny-listed extension — e.g. `TransferFee`, which would deliver a
-/// short leg while settlement still reported success. Re-checking binds
-/// Settle to the same accounting guarantees Create enforced. This does
-/// not strand funds: if a mint mutated out from under the agreement,
-/// Settle rejects and the honest party recovers via Reject/Reclaim,
-/// which stay tolerant so a leg is never locked.
+/// Mint ownership and extensions are **re-validated** here. Create is
+/// the consent point, but a leg left unfunded until the counterparty
+/// commits can be closed (zero supply) and recreated at the same address
+/// under the other token program or with a deny-listed extension (e.g.
+/// `TransferFee`), either of which would deliver a counterfeit or short
+/// leg while settlement still reported success. Re-checking binds Settle
+/// to the same guarantees Create enforced. This does not strand funds:
+/// if a mint mutated out from under the agreement, Settle rejects and
+/// the honest party recovers via Reject/Reclaim, which stay tolerant so
+/// a leg is never locked.
 ///
 /// # Account Layout
 /// 0.  `[signer, writable]` settlement_authority - Must equal `dvp.settlement_authority`; receives closed-account rent
@@ -107,6 +108,17 @@ pub fn process_settle_dvp(
         token_program_a_info.address() == &dvp.token_program_a
             && token_program_b_info.address() == &dvp.token_program_b,
         ProgramError::IncorrectProgramId
+    );
+
+    // Rebind each mint to the token program captured at Create. A
+    // zero-supply mint can be closed and recreated at the same address
+    // under the other token program with a fresh mint authority, and the
+    // token programs themselves don't reject a MintTo/TransferChecked
+    // whose mint lives in the other program's domain. Without this check
+    // such a leg would settle with post-create counterfeit issuance.
+    require!(
+        mint_a_info.owned_by(&dvp.token_program_a) && mint_b_info.owned_by(&dvp.token_program_b),
+        ProgramError::InvalidAccountOwner
     );
 
     // Re-check both mints against the Create deny-list: a leg recreated

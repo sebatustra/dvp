@@ -192,7 +192,9 @@ pub fn get_mint_decimals(mint_info: &AccountView) -> Result<u8, ProgramError> {
 /// zero-supply mint and recreate it at the same address with a
 /// different extension set. Settle re-runs this check so a leg recreated
 /// with a deny-listed extension (e.g. a transfer fee) can't reach a
-/// short "successful" settlement; the recovery paths stay tolerant so
+/// short "successful" settlement, and additionally rebinds each mint to
+/// its stored token program so a recreation under the other token
+/// program can't settle either; the recovery paths stay tolerant so
 /// funds are never stranded. Traders are still expected to vet the mints
 /// they agree to transact in; mint-authority trust is not a problem the
 /// program can solve.
