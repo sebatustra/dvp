@@ -45,9 +45,14 @@ const INSTRUCTION_DATA_LEN: usize = 32 * 5 + 8;
 /// ATA, then closes the escrow (rent to the signer) so it stops
 /// trapping deposits. Only valid once the SwapDvp is closed; Reclaim is
 /// the live-trade path. No extension validation, same policy as the
-/// other unwind paths. The token program is bound to the escrow account
-/// rather than the mint's current owner, so recovery survives a
-/// post-close mint recreation under the other token program.
+/// other unwind paths: skipping it means the program never blocks
+/// recovery, but the drain is still a real `TransferChecked`, so a mint
+/// recreated as `NonTransferable` or fee-bearing after close is
+/// unmovable or taxed by the token program itself. That is a
+/// trusted-authority risk, not a guarantee this path can override. The
+/// token program is bound to the escrow account rather than the mint's
+/// current owner, so recovery survives a post-close mint recreation
+/// under the other token program.
 ///
 /// # Account Layout
 /// 0. `[signer, writable]` signer - Depositor of the leg being recovered; receives the closed escrow's rent

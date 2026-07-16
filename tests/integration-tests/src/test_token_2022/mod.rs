@@ -381,8 +381,12 @@ fn test_create_rejects_mint_program_owner_mismatch_b() {
 
 // ---------------------------------------------------------------------
 // Extension validation runs at Create AND Settle. The recovery
-// paths (Cancel/Reject/Reclaim/Recover) stay tolerant so a post-Create
-// mint mutation can never strand funds. The tests below pin both halves:
+// paths (Cancel/Reject/Reclaim/Recover) skip it so the program never
+// blocks recovery after a post-Create mint mutation. That is not a
+// promise of full recovery: they still issue a real TransferChecked, so
+// a mint recreated as NonTransferable or fee-bearing is unmovable or
+// taxed by the token program itself (a trusted-authority risk, not one
+// the program can override). The tests below pin both halves:
 // Settle re-validates and rejects a leg that gained a blocked extension
 // after Create (then the honest party recovers via Reject), while Reject
 // itself does no extension check.
