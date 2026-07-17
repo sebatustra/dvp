@@ -9,18 +9,12 @@
  * program stores/settles the amounts verbatim, so this is enforced there.
  */
 import { describe, expect, it } from "@jest/globals";
-import { getAddressDecoder, type Address } from "@solana/kit";
 import { getCreateDvpInstructionDataEncoder } from "../generated/instructions/createDvp";
 import { getSafeI64Encoder, getSafeU64Encoder } from "../safeNumberCodecs";
-
-const addressOf = (fill: number): Address =>
-  getAddressDecoder().decode(new Uint8Array(32).fill(fill));
 
 /** Baseline args with every u64/i64 field a `bigint` (the safe path). */
 function args(overrides: Record<string, unknown> = {}) {
   return {
-    userA: addressOf(1),
-    userB: addressOf(2),
     amountA: 1_000n,
     amountB: 2_000n,
     expiryTimestamp: 1_780_000_000n,

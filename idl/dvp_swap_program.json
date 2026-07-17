@@ -287,24 +287,26 @@
         "kind": "errorNode",
         "message": "recipient ATA owner or mint does not match",
         "name": "recipientAtaMismatch"
+      },
+      {
+        "code": 22,
+        "kind": "errorNode",
+        "message": "user_a and user_b must be system-owned, non-executable accounts",
+        "name": "partyNotSignerCapable"
       }
     ],
     "instructions": [
       {
         "accounts": [
           {
-            "docs": [
-              "Funds account/ATA creation rent"
-            ],
+            "docs": ["Funds account/ATA creation rent"],
             "isSigner": true,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "payer"
           },
           {
-            "docs": [
-              "SwapDvp PDA to be created"
-            ],
+            "docs": ["SwapDvp PDA to be created"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
@@ -330,71 +332,73 @@
           },
           {
             "docs": [
-              "Mint of the asset leg (seller delivers)"
+              "Seller (delivers mint_a). Must be a system-owned, non-executable account so it can authorize Reject/Reclaim/Recover"
             ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "userA"
+          },
+          {
+            "docs": [
+              "Buyer (delivers mint_b). Same signer-capability requirement as user_a"
+            ],
+            "isSigner": false,
+            "isWritable": false,
+            "kind": "instructionAccountNode",
+            "name": "userB"
+          },
+          {
+            "docs": ["Mint of the asset leg (seller delivers)"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintA"
           },
           {
-            "docs": [
-              "Mint of the cash leg (buyer delivers)"
-            ],
+            "docs": ["Mint of the cash leg (buyer delivers)"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintB"
           },
           {
-            "docs": [
-              "swap_dvp's ATA for mint_a (created here)"
-            ],
+            "docs": ["swap_dvp's ATA for mint_a (created here)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaA"
           },
           {
-            "docs": [
-              "swap_dvp's ATA for mint_b (created here)"
-            ],
+            "docs": ["swap_dvp's ATA for mint_b (created here)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaB"
           },
           {
-            "docs": [
-              "System program"
-            ],
+            "docs": ["System program"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "systemProgram"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_a"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "tokenProgramA"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_b"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "tokenProgramB"
           },
           {
-            "docs": [
-              "Associated Token Account program"
-            ],
+            "docs": ["Associated Token Account program"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -414,20 +418,6 @@
               "endian": "le",
               "format": "u8",
               "kind": "numberTypeNode"
-            }
-          },
-          {
-            "kind": "instructionArgumentNode",
-            "name": "userA",
-            "type": {
-              "kind": "publicKeyTypeNode"
-            }
-          },
-          {
-            "kind": "instructionArgumentNode",
-            "name": "userB",
-            "type": {
-              "kind": "publicKeyTypeNode"
             }
           },
           {
@@ -551,18 +541,14 @@
       {
         "accounts": [
           {
-            "docs": [
-              "Depositor; must equal dvp.user_a or dvp.user_b"
-            ],
+            "docs": ["Depositor; must equal dvp.user_a or dvp.user_b"],
             "isSigner": true,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "signer"
           },
           {
-            "docs": [
-              "SwapDvp PDA (signs the transfer as authority)"
-            ],
+            "docs": ["SwapDvp PDA (signs the transfer as authority)"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -578,27 +564,21 @@
             "name": "mint"
           },
           {
-            "docs": [
-              "DvP's escrow ATA for the leg's mint"
-            ],
+            "docs": ["DvP's escrow ATA for the leg's mint"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpSourceAta"
           },
           {
-            "docs": [
-              "Signer's canonical ATA for the leg's mint"
-            ],
+            "docs": ["Signer's canonical ATA for the leg's mint"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "signerDestAta"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -652,45 +632,35 @@
             "name": "settlementAuthority"
           },
           {
-            "docs": [
-              "SwapDvp PDA (signs CPIs, then closed)"
-            ],
+            "docs": ["SwapDvp PDA (signs CPIs, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "swapDvp"
           },
           {
-            "docs": [
-              "Must equal dvp.mint_a"
-            ],
+            "docs": ["Must equal dvp.mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintA"
           },
           {
-            "docs": [
-              "Must equal dvp.mint_b"
-            ],
+            "docs": ["Must equal dvp.mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintB"
           },
           {
-            "docs": [
-              "Asset escrow (drained, then closed)"
-            ],
+            "docs": ["Asset escrow (drained, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaA"
           },
           {
-            "docs": [
-              "Cash escrow (drained, then closed)"
-            ],
+            "docs": ["Cash escrow (drained, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
@@ -733,18 +703,14 @@
             "name": "userBAtaB"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_a"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "tokenProgramA"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_b"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -807,81 +773,63 @@
             "name": "settlementAuthority"
           },
           {
-            "docs": [
-              "SwapDvp PDA (signs CPIs, then closed)"
-            ],
+            "docs": ["SwapDvp PDA (signs CPIs, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "swapDvp"
           },
           {
-            "docs": [
-              "Must equal dvp.mint_a"
-            ],
+            "docs": ["Must equal dvp.mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintA"
           },
           {
-            "docs": [
-              "Must equal dvp.mint_b"
-            ],
+            "docs": ["Must equal dvp.mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintB"
           },
           {
-            "docs": [
-              "Asset escrow (drained if funded, then closed)"
-            ],
+            "docs": ["Asset escrow (drained if funded, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaA"
           },
           {
-            "docs": [
-              "Cash escrow (drained if funded, then closed)"
-            ],
+            "docs": ["Cash escrow (drained if funded, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaB"
           },
           {
-            "docs": [
-              "user_a's ATA for mint_a; refund destination"
-            ],
+            "docs": ["user_a's ATA for mint_a; refund destination"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "userAAtaA"
           },
           {
-            "docs": [
-              "user_b's ATA for mint_b; refund destination"
-            ],
+            "docs": ["user_b's ATA for mint_b; refund destination"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "userBAtaB"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_a"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "tokenProgramA"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_b"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -944,81 +892,63 @@
             "name": "signer"
           },
           {
-            "docs": [
-              "SwapDvp PDA (signs CPIs, then closed)"
-            ],
+            "docs": ["SwapDvp PDA (signs CPIs, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "swapDvp"
           },
           {
-            "docs": [
-              "Must equal dvp.mint_a"
-            ],
+            "docs": ["Must equal dvp.mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintA"
           },
           {
-            "docs": [
-              "Must equal dvp.mint_b"
-            ],
+            "docs": ["Must equal dvp.mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "mintB"
           },
           {
-            "docs": [
-              "Asset escrow (drained if funded, then closed)"
-            ],
+            "docs": ["Asset escrow (drained if funded, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaA"
           },
           {
-            "docs": [
-              "Cash escrow (drained if funded, then closed)"
-            ],
+            "docs": ["Cash escrow (drained if funded, then closed)"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "dvpAtaB"
           },
           {
-            "docs": [
-              "user_a's ATA for mint_a; refund destination"
-            ],
+            "docs": ["user_a's ATA for mint_a; refund destination"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "userAAtaA"
           },
           {
-            "docs": [
-              "user_b's ATA for mint_b; refund destination"
-            ],
+            "docs": ["user_b's ATA for mint_b; refund destination"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "userBAtaB"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_a"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_a"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
             "name": "tokenProgramA"
           },
           {
-            "docs": [
-              "SPL Token or Token-2022 program; must own mint_b"
-            ],
+            "docs": ["SPL Token or Token-2022 program; must own mint_b"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -1090,9 +1020,7 @@
             "name": "swapDvp"
           },
           {
-            "docs": [
-              "Nonce tombstone PDA for swap_dvp; must be program-owned"
-            ],
+            "docs": ["Nonce tombstone PDA for swap_dvp; must be program-owned"],
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -1117,9 +1045,7 @@
             "name": "dvpEscrowAta"
           },
           {
-            "docs": [
-              "Signer's canonical ATA for the leg's mint"
-            ],
+            "docs": ["Signer's canonical ATA for the leg's mint"],
             "isSigner": false,
             "isWritable": true,
             "kind": "instructionAccountNode",

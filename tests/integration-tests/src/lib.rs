@@ -18,4 +18,6 @@ mod test_reject_dvp;
 #[cfg(test)]
 mod test_settle_dvp;
 #[cfg(test)]
+mod test_smart_wallet_party;
+#[cfg(test)]
 mod test_token_2022;

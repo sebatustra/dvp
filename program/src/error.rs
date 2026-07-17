@@ -115,6 +115,16 @@ pub enum DvpSwapProgramError {
     /// not authenticate the recipient.
     #[error("recipient ATA owner or mint does not match")]
     RecipientAtaMismatch,
+
+    /// (22) `user_a` or `user_b` is not a wallet-style identity. Every
+    /// unwind path (Reject/Reclaim/Recover) authorizes by requiring the
+    /// party to sign, which only a system-owned, non-executable account
+    /// can ever do (a keypair directly, or a smart-wallet PDA via CPI).
+    /// A party owned by another program (e.g. an SPL Token multisig) or
+    /// an executable can never sign, so its late deposits would be
+    /// unrecoverable; CreateDvp rejects it up front.
+    #[error("user_a and user_b must be system-owned, non-executable accounts")]
+    PartyNotSignerCapable,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

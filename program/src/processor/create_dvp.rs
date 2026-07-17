@@ -44,18 +44,18 @@ const MAX_DVP_DURATION_SECS: i64 = 365 * 24 * 60 * 60;
 /// 1. `[writable]` swap_dvp - SwapDvp PDA to be created
 /// 2. `[writable]` nonce_tombstone - Per-DvP nonce tombstone PDA, created here and never closed; rejects nonce reuse
 /// 3. `[]` settlement_authority - Third party allowed to settle/cancel; must not be executable
-/// 4. `[]` mint_a - Mint of the asset leg (seller delivers)
-/// 5. `[]` mint_b - Mint of the cash leg (buyer delivers)
-/// 6. `[writable]` dvp_ata_a - swap_dvp's ATA for mint_a (created here)
-/// 7. `[writable]` dvp_ata_b - swap_dvp's ATA for mint_b (created here)
-/// 8. `[]` system_program
-/// 9. `[]` token_program_a - SPL Token or Token-2022; must own mint_a
-/// 10. `[]` token_program_b - SPL Token or Token-2022; must own mint_b
-/// 11. `[]` associated_token_program
+/// 4. `[]` user_a - Seller; must be system-owned and non-executable so it can authorize the unwind paths
+/// 5. `[]` user_b - Buyer; same requirement as user_a
+/// 6. `[]` mint_a - Mint of the asset leg (seller delivers)
+/// 7. `[]` mint_b - Mint of the cash leg (buyer delivers)
+/// 8. `[writable]` dvp_ata_a - swap_dvp's ATA for mint_a (created here)
+/// 9. `[writable]` dvp_ata_b - swap_dvp's ATA for mint_b (created here)
+/// 10. `[]` system_program
+/// 11. `[]` token_program_a - SPL Token or Token-2022; must own mint_a
+/// 12. `[]` token_program_b - SPL Token or Token-2022; must own mint_b
+/// 13. `[]` associated_token_program
 ///
 /// # Instruction Data
-/// * `user_a` (Pubkey) - Seller
-/// * `user_b` (Pubkey) - Buyer
 /// * `amount_a` (u64) - Asset leg size
 /// * `amount_b` (u64) - Cash leg size
 /// * `expiry_timestamp` (i64) - After this, settlement is rejected
@@ -75,7 +75,7 @@ pub fn process_create_dvp(
 ) -> ProgramResult {
     let args = parse_instruction_data(instruction_data)?;
 
-    let [payer_info, swap_dvp_info, nonce_tombstone_info, settlement_authority_info, mint_a_info, mint_b_info, dvp_ata_a_info, dvp_ata_b_info, system_program_info, token_program_a_info, token_program_b_info, associated_token_program_info] =
+    let [payer_info, swap_dvp_info, nonce_tombstone_info, settlement_authority_info, user_a_info, user_b_info, mint_a_info, mint_b_info, dvp_ata_a_info, dvp_ata_b_info, system_program_info, token_program_a_info, token_program_b_info, associated_token_program_info] =
         accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -94,6 +94,13 @@ pub fn process_create_dvp(
         !settlement_authority_info.executable(),
         DvpSwapProgramError::SettlementAuthorityExecutable
     );
+    // Each party must be a wallet-style identity so it can authorize the
+    // unwind paths (Reject/Reclaim/Recover) as a signer, either directly
+    // as a keypair or as a smart-wallet PDA via CPI. The settlement
+    // authority needs no such check: if it can't sign, the parties still
+    // recover their funds via Reject/Reclaim.
+    verify_party_signer_capable(user_a_info)?;
+    verify_party_signer_capable(user_b_info)?;
     verify_account_owner(mint_a_info, token_program_a_info.address())?;
     verify_account_owner(mint_b_info, token_program_b_info.address())?;
     validate_mint_extensions(mint_a_info)?;
@@ -103,6 +110,8 @@ pub fn process_create_dvp(
     validate_args(
         &args,
         settlement_authority_info.address(),
+        user_a_info.address(),
+        user_b_info.address(),
         mint_a_info.address(),
         mint_b_info.address(),
         now,
@@ -113,8 +122,8 @@ pub fn process_create_dvp(
         &[
             SWAP_DVP_SEED,
             settlement_authority_info.address().as_ref(),
-            args.user_a.as_ref(),
-            args.user_b.as_ref(),
+            user_a_info.address().as_ref(),
+            user_b_info.address().as_ref(),
             mint_a_info.address().as_ref(),
             mint_b_info.address().as_ref(),
             &nonce_bytes,
@@ -129,8 +138,12 @@ pub fn process_create_dvp(
     // Resolve the destination defaults here (the consent point) so
     // Settle never branches: delivery always goes to the stored
     // destination's canonical ATA.
-    let user_a_settlement_destination = args.user_a_settlement_destination.unwrap_or(args.user_a);
-    let user_b_settlement_destination = args.user_b_settlement_destination.unwrap_or(args.user_b);
+    let user_a_settlement_destination = args
+        .user_a_settlement_destination
+        .unwrap_or(*user_a_info.address());
+    let user_b_settlement_destination = args
+        .user_b_settlement_destination
+        .unwrap_or(*user_b_info.address());
     require!(
         user_a_settlement_destination != expected_swap_dvp
             && user_b_settlement_destination != expected_swap_dvp,
@@ -171,8 +184,8 @@ pub fn process_create_dvp(
 
     let dvp = SwapDvp {
         bump,
-        user_a: args.user_a,
-        user_b: args.user_b,
+        user_a: *user_a_info.address(),
+        user_b: *user_b_info.address(),
         mint_a: *mint_a_info.address(),
         mint_b: *mint_b_info.address(),
         settlement_authority: *settlement_authority_info.address(),
@@ -258,8 +271,6 @@ pub fn process_create_dvp(
 
 #[derive(Debug)]
 struct CreateDvpArgs {
-    user_a: Address,
-    user_b: Address,
     amount_a: u64,
     amount_b: u64,
     expiry_timestamp: i64,
@@ -272,8 +283,7 @@ struct CreateDvpArgs {
     earliest_settlement_timestamp: Option<i64>,
 }
 
-/// Wire layout (variable, 100–240 bytes):
-///   user_a(32) | user_b(32) |
+/// Wire layout (variable, 36–176 bytes):
 ///   amount_a(8) | amount_b(8) | expiry_timestamp(8) | nonce(8) |
 ///   ref_tag(1) [ | ref_len(u32) | ref_bytes(0..=64) if tag == 1 ] |
 ///   destination_a_tag(1) [ | destination_a(32) if tag == 1 ] |
@@ -281,21 +291,13 @@ struct CreateDvpArgs {
 ///   earliest_tag(1) [ | earliest_payload(8) if tag == 1 ]
 ///
 /// Codama-style Option encoding: payload is omitted when tag == 0.
+/// user_a and user_b are accounts, not instruction data.
 fn parse_instruction_data(data: &[u8]) -> Result<CreateDvpArgs, ProgramError> {
-    // Required prefix: two pubkeys + four u64/i64 fields + four option
-    // tags, so every tag read below is in bounds even when all options
-    // are None.
-    require_len!(data, 32 * 2 + 8 * 4 + 4);
+    // Required prefix: four u64/i64 fields + four option tags, so every
+    // tag read below is in bounds even when all options are None.
+    require_len!(data, 8 * 4 + 4);
 
     let mut offset = 0;
-
-    let mut user_a = [0u8; 32];
-    user_a.copy_from_slice(&data[offset..offset + 32]);
-    offset += 32;
-
-    let mut user_b = [0u8; 32];
-    user_b.copy_from_slice(&data[offset..offset + 32]);
-    offset += 32;
 
     let amount_a = u64::from_le_bytes(
         data[offset..offset + 8]
@@ -399,8 +401,6 @@ fn parse_instruction_data(data: &[u8]) -> Result<CreateDvpArgs, ProgramError> {
     };
 
     Ok(CreateDvpArgs {
-        user_a: Address::new_from_array(user_a),
-        user_b: Address::new_from_array(user_b),
         amount_a,
         amount_b,
         expiry_timestamp,
@@ -412,11 +412,27 @@ fn parse_instruction_data(data: &[u8]) -> Result<CreateDvpArgs, ProgramError> {
     })
 }
 
+/// A party must be a wallet-style identity: system-owned and
+/// non-executable. Only such an account can ever authorize the unwind
+/// paths (Reject/Reclaim/Recover) as a signer, either as a keypair or as
+/// a smart-wallet PDA signing via CPI. An account owned by another
+/// program (e.g. an SPL Token multisig) or an executable can never sign,
+/// so a late deposit to its leg would be unrecoverable.
+fn verify_party_signer_capable(info: &AccountView) -> Result<(), ProgramError> {
+    require!(
+        info.owned_by(&pinocchio_system::ID) && !info.executable(),
+        DvpSwapProgramError::PartyNotSignerCapable
+    );
+    Ok(())
+}
+
 /// Reject DvPs that can never settle, are degenerate, or have leg
 /// configurations the rest of the processor would mishandle later.
 fn validate_args(
     args: &CreateDvpArgs,
     settlement_authority: &Address,
+    user_a: &Address,
+    user_b: &Address,
     mint_a: &Address,
     mint_b: &Address,
     now: i64,
@@ -435,9 +451,9 @@ fn validate_args(
             DvpSwapProgramError::EarliestAfterExpiry
         );
     }
-    require!(args.user_a != args.user_b, DvpSwapProgramError::SelfDvp);
+    require!(user_a != user_b, DvpSwapProgramError::SelfDvp);
     require!(
-        settlement_authority != &args.user_a && settlement_authority != &args.user_b,
+        settlement_authority != user_a && settlement_authority != user_b,
         DvpSwapProgramError::SettlementAuthorityIsParty
     );
     require!(mint_a != mint_b, DvpSwapProgramError::SameMint);
@@ -456,8 +472,6 @@ mod tests {
 
     fn args() -> CreateDvpArgs {
         CreateDvpArgs {
-            user_a: Address::new_from_array([1u8; 32]),
-            user_b: Address::new_from_array([2u8; 32]),
             amount_a: 1_000,
             amount_b: 2_000,
             expiry_timestamp: NOW + 3_600,
@@ -467,6 +481,13 @@ mod tests {
             user_b_settlement_destination: None,
             earliest_settlement_timestamp: None,
         }
+    }
+
+    fn user_a() -> Address {
+        Address::new_from_array([1u8; 32])
+    }
+    fn user_b() -> Address {
+        Address::new_from_array([2u8; 32])
     }
 
     fn settlement_authority() -> Address {
@@ -486,32 +507,64 @@ mod tests {
 
     #[test]
     fn validate_args_accepts_well_formed_input() {
-        validate_args(&args(), &settlement_authority(), &mint_a(), &mint_b(), NOW)
-            .expect("baseline must pass");
+        validate_args(
+            &args(),
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .expect("baseline must pass");
     }
 
     #[test]
     fn validate_args_accepts_earliest_equal_to_expiry() {
         let mut a = args();
         a.earliest_settlement_timestamp = Some(a.expiry_timestamp);
-        validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW)
-            .expect("earliest == expiry is allowed");
+        validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .expect("earliest == expiry is allowed");
     }
 
     #[test]
     fn validate_args_accepts_earliest_in_the_past() {
         let mut a = args();
         a.earliest_settlement_timestamp = Some(NOW - 100);
-        validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW)
-            .expect("past earliest means 'any time'");
+        validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .expect("past earliest means 'any time'");
     }
 
     #[test]
     fn validate_args_rejects_expiry_at_now() {
         let mut a = args();
         a.expiry_timestamp = NOW;
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::ExpiryNotInFuture);
     }
 
@@ -519,8 +572,16 @@ mod tests {
     fn validate_args_rejects_expiry_in_past() {
         let mut a = args();
         a.expiry_timestamp = NOW - 1;
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::ExpiryNotInFuture);
     }
 
@@ -528,16 +589,32 @@ mod tests {
     fn validate_args_accepts_expiry_at_max_horizon() {
         let mut a = args();
         a.expiry_timestamp = NOW + MAX_DVP_DURATION_SECS;
-        validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW)
-            .expect("expiry exactly at the cap is allowed");
+        validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .expect("expiry exactly at the cap is allowed");
     }
 
     #[test]
     fn validate_args_rejects_expiry_beyond_max_horizon() {
         let mut a = args();
         a.expiry_timestamp = NOW + MAX_DVP_DURATION_SECS + 1;
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::ExpiryTooFarInFuture);
     }
 
@@ -545,38 +622,76 @@ mod tests {
     fn validate_args_rejects_earliest_after_expiry() {
         let mut a = args();
         a.earliest_settlement_timestamp = Some(a.expiry_timestamp + 1);
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::EarliestAfterExpiry);
     }
 
     #[test]
     fn validate_args_rejects_self_dvp() {
-        let mut a = args();
-        a.user_b = a.user_a;
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &args(),
+            &settlement_authority(),
+            &user_a(),
+            &user_a(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::SelfDvp);
     }
 
     #[test]
     fn validate_args_rejects_settlement_authority_equal_to_user_a() {
-        let a = args();
-        let err = validate_args(&a, &a.user_a, &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &args(),
+            &user_a(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::SettlementAuthorityIsParty);
     }
 
     #[test]
     fn validate_args_rejects_settlement_authority_equal_to_user_b() {
-        let a = args();
-        let err = validate_args(&a, &a.user_b, &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &args(),
+            &user_b(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::SettlementAuthorityIsParty);
     }
 
     #[test]
     fn validate_args_rejects_same_mint() {
-        let err =
-            validate_args(&args(), &settlement_authority(), &mint_a(), &mint_a(), NOW).unwrap_err();
+        let err = validate_args(
+            &args(),
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_a(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::SameMint);
     }
 
@@ -584,8 +699,16 @@ mod tests {
     fn validate_args_rejects_zero_amount_a() {
         let mut a = args();
         a.amount_a = 0;
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::ZeroAmount);
     }
 
@@ -593,8 +716,16 @@ mod tests {
     fn validate_args_rejects_zero_amount_b() {
         let mut a = args();
         a.amount_b = 0;
-        let err =
-            validate_args(&a, &settlement_authority(), &mint_a(), &mint_b(), NOW).unwrap_err();
+        let err = validate_args(
+            &a,
+            &settlement_authority(),
+            &user_a(),
+            &user_b(),
+            &mint_a(),
+            &mint_b(),
+            NOW,
+        )
+        .unwrap_err();
         assert_custom(err, DvpSwapProgramError::ZeroAmount);
     }
 }

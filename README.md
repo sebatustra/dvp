@@ -93,6 +93,8 @@ PDA seeds: `[b"dvp", settlement_authority, user_a, user_b, mint_a, mint_b, nonce
 - **Expiry is capped at one year.** `CreateDvp` rejects an `expiry_timestamp` more than one year past creation, bounding how long escrow rent can be locked. `earliest_settlement_timestamp` inherits the cap since it must be `<= expiry`.
 - **Time is cluster time, not wall-clock.** All time gates use `Clock::unix_timestamp` (validator-vote median), which lags real time ~10 to 30s and can jump forward. Budget ~60s of drift: set `expiry` well past the real deadline and don't fund/settle/reclaim right at a boundary.
 - **Nonces are single-use forever.** `CreateDvp` also creates a small nonce-tombstone PDA (seeds `[b"nonce", swap_dvp]`) that is never closed. A `(seeds, nonce)` combination can therefore only ever map to one trade: after a DvP closes, its PDA address can't be re-instantiated with new terms, so a deposit queued against the old escrow can't be captured by a recreated instance (it stays recoverable via `RecoverDvp`). The tombstone doubles as the proof-of-existence `RecoverDvp` checks. Use a fresh nonce for each new DvP between the same parties + mints.
+- **Parties must be signer-capable identities.** `user_a` and `user_b` are passed as accounts and must each be system-owned and non-executable, i.e. a wallet-style identity that can authorize the unwind paths (Reject/Reclaim/Recover) — either an ordinary keypair wallet or a smart-wallet PDA that signs via CPI (e.g. a Squads vault). A party owned by another program, such as an SPL Token multisig, or an executable account is rejected at Create (`PartyNotSignerCapable`): it could control a funding account but could never sign to recover a late deposit, so its funds would be strandable. The `settlement_authority` carries no such requirement — if it can't sign, the parties still recover their funds via Reject/Reclaim. For custodian integrations that hold assets in a token multisig, route the DvP party through a smart-wallet/PDA the custodian controls rather than naming the multisig directly.
+
 - **`CreateDvp` is permissionless — a record is not proof of agreement.** Only the payer signs; `user_a`, `user_b`, and `settlement_authority` do not. So anyone can create a `SwapDvp` for any parties with arbitrary terms (any non-zero amounts, any future expiry). The economic terms are stored in the account but are **not** part of the PDA seeds, so the address doesn't bind them. Two consequences clients must handle:
   - **Use a cryptographically random 64-bit `nonce` per trade.** A predictable nonce lets a third party squat the intended slot (and, after the real parties reject it, the tombstone burns that nonce — so they'd need a fresh one anyway). Random nonces make squatting/DoS impractical.
   - **Verify stored terms before acting.** Funders must read the on-chain `SwapDvp` and check `amount_a`/`amount_b`/`expiry`/`earliest`/`user_a`/`user_b`/`settlement_authority`/`user_a_settlement_destination`/`user_b_settlement_destination` against the agreed deal — a forged create with attacker destinations would redirect settlement proceeds — _before_ depositing (escrow addresses derive only from PDA+mint, never from terms, so a raw transfer can land against terms you never agreed to). The `settlement_authority` must re-validate before `Settle`. Verification must also confirm the account is owned by the DvP program and is exactly `SwapDvp::LEN` (394) bytes; otherwise an attacker can serialize look-alike terms into a wallet-owned account and drain the escrow ATA you fund. The generated `fetch`/`decode` readers check neither, so use the checked helpers: `verifySwapDvp` / `decodeSwapDvpChecked` / `findSwapDvpPda` / `findSwapDvpEscrowAta` (TypeScript) or `verify::decode_swap_dvp_account` / `verify::find_swap_dvp_address` / `verify::find_swap_dvp_escrow_ata` (Rust).
@@ -103,27 +105,31 @@ PDA seeds: `[b"dvp", settlement_authority, user_a, user_b, mint_a, mint_b, nonce
 
 ## Errors
 
-| Code | Variant                         | When                                                                                                                            |
-| ---- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | `SignerNotParty`                | Reclaim/Reject/Recover signer is not `user_a` or `user_b`                                                                       |
-| 1    | `DvpExpired`                    | Settle after `expiry_timestamp`                                                                                                 |
-| 2    | `SettlementAuthorityMismatch`   | Settle/Cancel signer is not `settlement_authority`                                                                              |
-| 3    | `SettlementTooEarly`            | Settle when `now < earliest_settlement_timestamp`                                                                               |
-| 4    | `LegNotFunded`                  | Settle when an escrow holds less than its target amount                                                                         |
-| 5    | `ExpiryNotInFuture`             | Create with `expiry_timestamp <= now`                                                                                           |
-| 6    | `EarliestAfterExpiry`           | Create with `earliest > expiry`                                                                                                 |
-| 7    | `SelfDvp`                       | Create with `user_a == user_b`                                                                                                  |
-| 8    | `SameMint`                      | Create with `mint_a == mint_b`                                                                                                  |
-| 9    | `ZeroAmount`                    | Create with `amount_a == 0` or `amount_b == 0`                                                                                  |
-| 10   | `BlockedMintExtension`          | Create with a Token-2022 mint carrying an unsupported extension (TransferFee, InterestBearing, ScaledUiAmount, NonTransferable) |
-| 11   | `SettlementAuthorityIsParty`    | Create with `settlement_authority` equal to `user_a` or `user_b`                                                                |
-| 12   | `SettlementAuthorityExecutable` | Create with an executable `settlement_authority` (can't be credited closed-account rent)                                        |
-| 13   | `NonceAlreadyUsed`              | Create reusing a `(seeds, nonce)` that already has a nonce tombstone (the address was used by a prior DvP)                      |
-| 14   | `ExpiryTooFarInFuture`          | Create with `expiry_timestamp` more than one year past creation time                                                            |
-| 15   | `RefStringTooLong`              | Create with a `ref_string` longer than 64 bytes                                                                                 |
-| 16   | `DvpStillOpen`                  | Recover while the SwapDvp is still program-owned (use Reclaim instead)                                                          |
-| 17   | `DvpNeverCreated`               | Recover with seed inputs that derive an address with no nonce tombstone                                                         |
-| 18   | `EscrowPreloadedWithLamports`   | Create when a non-native escrow ATA holds lamports above its rent-exempt minimum                                                |
+| Code | Variant                          | When                                                                                                                            |
+| ---- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | `SignerNotParty`                 | Reclaim/Reject/Recover signer is not `user_a` or `user_b`                                                                       |
+| 1    | `DvpExpired`                     | Settle after `expiry_timestamp`                                                                                                 |
+| 2    | `SettlementAuthorityMismatch`    | Settle/Cancel signer is not `settlement_authority`                                                                              |
+| 3    | `SettlementTooEarly`             | Settle when `now < earliest_settlement_timestamp`                                                                               |
+| 4    | `LegNotFunded`                   | Settle when an escrow holds less than its target amount                                                                         |
+| 5    | `ExpiryNotInFuture`              | Create with `expiry_timestamp <= now`                                                                                           |
+| 6    | `EarliestAfterExpiry`            | Create with `earliest > expiry`                                                                                                 |
+| 7    | `SelfDvp`                        | Create with `user_a == user_b`                                                                                                  |
+| 8    | `SameMint`                       | Create with `mint_a == mint_b`                                                                                                  |
+| 9    | `ZeroAmount`                     | Create with `amount_a == 0` or `amount_b == 0`                                                                                  |
+| 10   | `BlockedMintExtension`           | Create with a Token-2022 mint carrying an unsupported extension (TransferFee, InterestBearing, ScaledUiAmount, NonTransferable) |
+| 11   | `SettlementAuthorityIsParty`     | Create with `settlement_authority` equal to `user_a` or `user_b`                                                                |
+| 12   | `SettlementAuthorityExecutable`  | Create with an executable `settlement_authority` (can't be credited closed-account rent)                                        |
+| 13   | `NonceAlreadyUsed`               | Create reusing a `(seeds, nonce)` that already has a nonce tombstone (the address was used by a prior DvP)                      |
+| 14   | `ExpiryTooFarInFuture`           | Create with `expiry_timestamp` more than one year past creation time                                                            |
+| 15   | `RefStringTooLong`               | Create with a `ref_string` longer than 64 bytes                                                                                 |
+| 16   | `DvpStillOpen`                   | Recover while the SwapDvp is still program-owned (use Reclaim instead)                                                          |
+| 17   | `DvpNeverCreated`                | Recover with seed inputs that derive an address with no nonce tombstone                                                         |
+| 18   | `EscrowPreloadedWithLamports`    | Create when a non-native escrow ATA holds lamports above its rent-exempt minimum                                                |
+| 19   | `SettlementDestinationIsSwapDvp` | Create with a settlement destination equal to the `swap_dvp` PDA                                                                |
+| 20   | `SwapDvpPreloadedWithLamports`   | Create when the `swap_dvp` account holds lamports above its rent reserve                                                        |
+| 21   | `RecipientAtaMismatch`           | Settle/Cancel/Reject when a recipient or refund ATA's `owner`/`mint` no longer matches the expected wallet/mint                 |
+| 22   | `PartyNotSignerCapable`          | Create with `user_a` or `user_b` that is not a system-owned, non-executable account                                             |
 
 ## Build & test
 

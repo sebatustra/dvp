@@ -4,7 +4,7 @@ use solana_program::{clock::Clock, pubkey};
 use solana_program_pack::Pack;
 use solana_sdk::{
     account::Account,
-    instruction::Instruction,
+    instruction::{AccountMeta, Instruction},
     program_option::COption,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
@@ -44,8 +44,15 @@ pub const SWAP_PROGRAM_ID: Pubkey = DVP_SWAP_PROGRAM_ID;
 /// `declare_id!` in `dvp-swap-program/tests/transfer-hook-fixture/src/lib.rs`.
 pub const HOOK_FIXTURE_PROGRAM_ID: Pubkey = pubkey!("HookqJupt6Khm8s8jB3p93NkhPoiAg2M7vkEhkS15CtC");
 
+/// Program ID of the smart-wallet fixture loaded into LiteSVM for
+/// Squads-style (vault PDA signs via CPI) party tests. Matches
+/// `declare_id!` in `dvp-swap-program/tests/smart-wallet-fixture/src/lib.rs`.
+pub const SMART_WALLET_FIXTURE_PROGRAM_ID: Pubkey =
+    pubkey!("H5tY4bRL6jk62vkxeytUVVjYDjBWgV6FQMvgnmaJNuNz");
+
 pub const SWAP_DVP_SEED: &[u8] = b"dvp";
 pub const NONCE_TOMBSTONE_SEED: &[u8] = b"nonce";
+pub const SMART_WALLET_VAULT_SEED: &[u8] = b"vault";
 
 pub const SIGNER_NOT_PARTY: u32 = DvpSwapProgramError::SignerNotParty as u32;
 pub const DVP_EXPIRED: u32 = DvpSwapProgramError::DvpExpired as u32;
@@ -75,6 +82,7 @@ pub const SETTLEMENT_DESTINATION_IS_SWAP_DVP: u32 =
 pub const SWAP_DVP_PRELOADED_WITH_LAMPORTS: u32 =
     DvpSwapProgramError::SwapDvpPreloadedWithLamports as u32;
 pub const RECIPIENT_ATA_MISMATCH: u32 = DvpSwapProgramError::RecipientAtaMismatch as u32;
+pub const PARTY_NOT_SIGNER_CAPABLE: u32 = DvpSwapProgramError::PartyNotSignerCapable as u32;
 
 const MIN_LAMPORTS: u64 = 500_000_000;
 
@@ -108,6 +116,9 @@ impl TestContext {
 
         let hook_data = include_bytes!("../../../target/deploy/transfer_hook_fixture.so");
         let _ = svm.add_program(HOOK_FIXTURE_PROGRAM_ID, hook_data);
+
+        let smart_wallet_data = include_bytes!("../../../target/deploy/smart_wallet_fixture.so");
+        let _ = svm.add_program(SMART_WALLET_FIXTURE_PROGRAM_ID, smart_wallet_data);
 
         let payer = Keypair::new();
         svm.airdrop(&payer.pubkey(), 1_000_000_000).unwrap();
@@ -268,6 +279,25 @@ pub fn set_token_balance(
     write_account(context, ata, data, *token_program, 2_039_280);
 }
 
+/// Write an initialized SPL Token multisig account at `address`. A token
+/// multisig is a data account owned by the token program, not a wallet:
+/// it can authorize token operations but can never itself sign a
+/// transaction, so it is not a valid DvP party.
+pub fn set_token_multisig(context: &mut TestContext, address: &Pubkey, token_program: &Pubkey) {
+    use spl_token::state::Multisig;
+
+    let mut multisig = Multisig {
+        m: 1,
+        n: 1,
+        is_initialized: true,
+        signers: [Pubkey::default(); 11],
+    };
+    multisig.signers[0] = Keypair::new().pubkey();
+    let mut data = vec![0u8; Multisig::LEN];
+    Multisig::pack(multisig, &mut data).unwrap();
+    write_account(context, address, data, *token_program, 1_000_000);
+}
+
 pub fn fund_wallet_ata(
     context: &mut TestContext,
     wallet: &Keypair,
@@ -346,6 +376,42 @@ pub fn swap_dvp_pda(
 
 pub fn nonce_tombstone_pda(swap_dvp: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[NONCE_TOMBSTONE_SEED, swap_dvp.as_ref()], &SWAP_PROGRAM_ID)
+}
+
+/// Vault PDA of the smart-wallet fixture for `vault_index`. Used as a
+/// DvP party address to model a Squads-style vault: it can never sign a
+/// transaction directly, only via the fixture's CPI.
+pub fn smart_wallet_vault_pda(vault_index: u8) -> Pubkey {
+    Pubkey::find_program_address(
+        &[SMART_WALLET_VAULT_SEED, &[vault_index]],
+        &SMART_WALLET_FIXTURE_PROGRAM_ID,
+    )
+    .0
+}
+
+/// Wrap `inner` so it is relayed through the smart-wallet fixture, which
+/// re-signs it as `vault_index`'s vault PDA. The fixture takes the inner
+/// program as account 0, then the inner accounts; the vault's signer bit
+/// is dropped here (a PDA can't sign the outer tx) and re-added by the
+/// fixture via seeds. Data is `[vault_index] ++ inner.data`.
+pub fn wrap_via_smart_wallet(inner: Instruction, vault_index: u8) -> Instruction {
+    let vault = smart_wallet_vault_pda(vault_index);
+    let mut accounts = vec![AccountMeta::new_readonly(inner.program_id, false)];
+    for meta in inner.accounts {
+        let is_signer = meta.is_signer && meta.pubkey != vault;
+        accounts.push(AccountMeta {
+            pubkey: meta.pubkey,
+            is_signer,
+            is_writable: meta.is_writable,
+        });
+    }
+    let mut data = vec![vault_index];
+    data.extend_from_slice(&inner.data);
+    Instruction {
+        program_id: SMART_WALLET_FIXTURE_PROGRAM_ID,
+        accounts,
+        data,
+    }
 }
 
 pub fn dvp_ata(swap_dvp: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
