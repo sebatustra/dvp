@@ -143,3 +143,40 @@ describe("canonical derivation helpers (verify-before-fund)", () => {
     expect(ata).toBe("GBrJyDbxFv8EQ14ww1546RimNv256wEJwVv3LpBDDbEZ");
   });
 });
+
+// The nonce is a PDA seed the on-chain program treats as a full-width
+// u64. A JavaScript number above 2^53 has already rounded before it can
+// be encoded, so distinct nonces would derive the same PDA. The helper
+// must require a bigint and reject number outright.
+describe("findSwapDvpPda nonce is a lossless u64", () => {
+  const baseArgs = {
+    settlementAuthority: addressOf(5),
+    userA: addressOf(1),
+    userB: addressOf(2),
+    mintA: addressOf(3),
+    mintB: addressOf(4),
+  };
+
+  it("rejects an unsafe number nonce instead of rounding it", () => {
+    // 2**53 + 1 is not representable as a number; it silently becomes
+    // 2**53. The guard must throw rather than derive a rounded PDA.
+    expect(() =>
+      findSwapDvpPda({
+        ...baseArgs,
+        nonce: (2 ** 53 + 1) as unknown as bigint,
+      }),
+    ).toThrow(/bigint/i);
+  });
+
+  it("rejects a plain number even when small and safe", () => {
+    expect(() =>
+      findSwapDvpPda({ ...baseArgs, nonce: 42 as unknown as bigint }),
+    ).toThrow(/bigint/i);
+  });
+
+  it("derives distinct PDAs for distinct large bigint nonces", async () => {
+    const [a] = await findSwapDvpPda({ ...baseArgs, nonce: 2n ** 53n + 1n });
+    const [b] = await findSwapDvpPda({ ...baseArgs, nonce: 2n ** 53n + 2n });
+    expect(a).not.toBe(b);
+  });
+});
