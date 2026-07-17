@@ -55,6 +55,12 @@ export function patchTypeScriptSafeNumbers(typescriptClientsDir: string): void {
         .split("getI64Encoder()")
         .join("getSafeI64Encoder()");
 
+      // Those call sites were the only uses of the raw kit encoders; drop
+      // the now-unused named imports (codama renders one specifier per
+      // line, 2-space indented). The matching decoders are untouched.
+      if (usesU64) patched = patched.replace(/^ {2}getU64Encoder,\n/m, "");
+      if (usesI64) patched = patched.replace(/^ {2}getI64Encoder,\n/m, "");
+
       // Import the guards actually used. Files in generated/instructions and
       // generated/accounts both live two levels below src, so the
       // hand-written helper is at ../../safeNumberCodecs.

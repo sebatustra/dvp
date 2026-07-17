@@ -44,8 +44,11 @@ patchRustCpiAccountFlags(rustClientsDir);
 
 // The JS renderer writes asynchronously; await it so the post-render
 // patch sees the generated files. Wrapped in an async IIFE because the
-// script is transpiled to CJS, which has no top-level await.
-void (async () => {
+// script is transpiled to CJS, which has no top-level await. The explicit
+// .catch fails the process with a clean stack trace (e.g. when the
+// safety-net patch throws), rather than relying on Node's
+// unhandled-rejection behavior.
+(async () => {
   await dvpSwapCodama.accept(
     renderJavaScriptVisitor(
       path.join(typescriptClientsDir, "src", "generated"),
@@ -61,4 +64,7 @@ void (async () => {
   patchTypeScriptSafeNumbers(typescriptClientsDir);
 
   configPreserver.restore();
-})();
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
