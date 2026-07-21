@@ -17,7 +17,6 @@ import {
   fetchEncodedAccount,
   getAddressEncoder,
   getProgramDerivedAddress,
-  getU64Encoder,
   type Account,
   type Address,
   type EncodedAccount,
@@ -27,6 +26,7 @@ import {
 } from "@solana/kit";
 import { getSwapDvpDecoder, type SwapDvp } from "./generated/accounts/swapDvp";
 import { DVP_SWAP_PROGRAM_PROGRAM_ADDRESS } from "./generated/programs/dvpSwapProgram";
+import { getSafeU64Encoder } from "./safeNumberCodecs";
 
 /** Fixed on-chain size of a `SwapDvp` account (`SwapDvp::LEN`). */
 export const SWAP_DVP_ACCOUNT_SIZE = 394;
@@ -96,8 +96,10 @@ export async function fetchSwapDvpChecked<TAddress extends string = string>(
   return decodeSwapDvpChecked(encoded);
 }
 
-const u64Bytes = (value: bigint | number): ReadonlyUint8Array =>
-  getU64Encoder().encode(value);
+// The nonce is a PDA seed; a JavaScript number above 2^53 would round
+// before encoding and derive the wrong address, so require a bigint.
+const u64Bytes = (value: bigint): ReadonlyUint8Array =>
+  getSafeU64Encoder().encode(value);
 
 /**
  * Derives the canonical `SwapDvp` PDA from agreed terms (on-chain seeds
@@ -110,7 +112,7 @@ export function findSwapDvpPda(args: {
   userB: Address;
   mintA: Address;
   mintB: Address;
-  nonce: bigint | number;
+  nonce: bigint;
   programAddress?: Address;
 }): Promise<readonly [Address, number]> {
   const addressEncoder = getAddressEncoder();

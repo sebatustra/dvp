@@ -3,6 +3,7 @@ import path from "path";
 import { preserveConfigFiles } from "./lib/utils";
 import { createDvpSwapCodamaBuilder } from "./lib/dvp-swap-codama-builder";
 import { patchRustCpiAccountFlags } from "./lib/patch-rust-cpi-account-flags";
+import { patchTypeScriptSafeNumbers } from "./lib/patch-typescript-safe-numbers";
 import { renderVisitor as renderRustVisitor } from "@codama/renderers-rust";
 import { renderVisitor as renderJavaScriptVisitor } from "@codama/renderers-js";
 
@@ -41,11 +42,29 @@ dvpSwapCodama.accept(
 // @codama/renderers-rust (see patch-rust-cpi-account-flags.ts).
 patchRustCpiAccountFlags(rustClientsDir);
 
-dvpSwapCodama.accept(
-  renderJavaScriptVisitor(path.join(typescriptClientsDir, "src", "generated"), {
-    formatCode: true,
-    deleteFolderBeforeRendering: true,
-  }),
-);
+// The JS renderer writes asynchronously; await it so the post-render
+// patch sees the generated files. Wrapped in an async IIFE because the
+// script is transpiled to CJS, which has no top-level await. The explicit
+// .catch fails the process with a clean stack trace (e.g. when the
+// safety-net patch throws), rather than relying on Node's
+// unhandled-rejection behavior.
+(async () => {
+  await dvpSwapCodama.accept(
+    renderJavaScriptVisitor(
+      path.join(typescriptClientsDir, "src", "generated"),
+      {
+        formatCode: true,
+        deleteFolderBeforeRendering: true,
+      },
+    ),
+  );
 
-configPreserver.restore();
+  // Reject unsafe `number` on 64-bit args, which kit's encoders would
+  // silently round (see patch-typescript-safe-numbers.ts).
+  patchTypeScriptSafeNumbers(typescriptClientsDir);
+
+  configPreserver.restore();
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

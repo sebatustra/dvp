@@ -3,7 +3,8 @@ use crate::{
     processor::shared::account_check::{verify_account_owner, verify_signer},
     processor::shared::token_utils::{
         get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
-        validate_mint_extensions, verify_canonical_ata,
+        validate_mint_extensions, verify_ata_recipient, verify_ata_recipient_if_initialized,
+        verify_canonical_ata,
     },
     processor::shared::utils::split_leg_remaining_accounts,
     require,
@@ -38,15 +39,16 @@ const FIXED_ACCOUNTS_LEN: usize = 13;
 /// This ensures the counterparty receives exactly the agreed amount and
 /// cannot capture an over-deposit.
 ///
-/// Mint extensions are **re-validated** here. Create is the consent
-/// point, but a leg left unfunded until the counterparty commits can be
-/// closed (zero supply) and recreated at the same address with a
-/// deny-listed extension — e.g. `TransferFee`, which would deliver a
-/// short leg while settlement still reported success. Re-checking binds
-/// Settle to the same accounting guarantees Create enforced. This does
-/// not strand funds: if a mint mutated out from under the agreement,
-/// Settle rejects and the honest party recovers via Reject/Reclaim,
-/// which stay tolerant so a leg is never locked.
+/// Mint ownership and extensions are **re-validated** here. Create is
+/// the consent point, but a leg left unfunded until the counterparty
+/// commits can be closed (zero supply) and recreated at the same address
+/// under the other token program or with a deny-listed extension (e.g.
+/// `TransferFee`), either of which would deliver a counterfeit or short
+/// leg while settlement still reported success. Re-checking binds Settle
+/// to the same guarantees Create enforced. This does not strand funds:
+/// if a mint mutated out from under the agreement, Settle rejects and
+/// the honest party recovers via Reject/Reclaim, which stay tolerant so
+/// a leg is never locked.
 ///
 /// # Account Layout
 /// 0.  `[signer, writable]` settlement_authority - Must equal `dvp.settlement_authority`; receives closed-account rent
@@ -109,6 +111,17 @@ pub fn process_settle_dvp(
         ProgramError::IncorrectProgramId
     );
 
+    // Rebind each mint to the token program captured at Create. A
+    // zero-supply mint can be closed and recreated at the same address
+    // under the other token program with a fresh mint authority, and the
+    // token programs themselves don't reject a MintTo/TransferChecked
+    // whose mint lives in the other program's domain. Without this check
+    // such a leg would settle with post-create counterfeit issuance.
+    require!(
+        mint_a_info.owned_by(&dvp.token_program_a) && mint_b_info.owned_by(&dvp.token_program_b),
+        ProgramError::InvalidAccountOwner
+    );
+
     // Re-check both mints against the Create deny-list: a leg recreated
     // with a blocked extension (e.g. TransferFee) after Create must not
     // reach a "successful" short settlement. Recovery paths stay tolerant.
@@ -142,12 +155,20 @@ pub fn process_settle_dvp(
         token_program_b_info,
     )?;
     // user_a_destination_ata_b: destination_a's ATA for mint_b —
-    // receives the cash leg.
+    // receives the cash leg. Delivery always fires, so require the
+    // account still belong to the destination: a canonical address alone
+    // doesn't prove it, since a legacy SPL account can be owner-reassigned
+    // without changing its ATA pubkey.
     verify_canonical_ata(
         user_a_destination_ata_b_info,
         &dvp.user_a_settlement_destination,
         &dvp.mint_b,
         token_program_b_info,
+    )?;
+    verify_ata_recipient(
+        user_a_destination_ata_b_info,
+        &dvp.user_a_settlement_destination,
+        &dvp.mint_b,
     )?;
     // user_b_destination_ata_a: destination_b's ATA for mint_a —
     // receives the asset leg.
@@ -157,16 +178,22 @@ pub fn process_settle_dvp(
         &dvp.mint_a,
         token_program_a_info,
     )?;
+    verify_ata_recipient(
+        user_b_destination_ata_a_info,
+        &dvp.user_b_settlement_destination,
+        &dvp.mint_a,
+    )?;
     // user_a_ata_a: seller's ATA for mint_a — surplus refund destination
-    // for the asset leg. Address-only validation: only touched if
-    // surplus > 0, in which case the Transfer CPI fails naturally on an
-    // uninitialized destination.
+    // for the asset leg. Only touched if surplus > 0; tolerated when
+    // uninitialized, but if it exists its owner/mint must still match so
+    // a reassigned account can't capture the surplus.
     verify_canonical_ata(
         user_a_ata_a_info,
         &dvp.user_a,
         &dvp.mint_a,
         token_program_a_info,
     )?;
+    verify_ata_recipient_if_initialized(user_a_ata_a_info, &dvp.user_a, &dvp.mint_a)?;
     // user_b_ata_b: buyer's ATA for mint_b — surplus refund destination
     // for the cash leg. Same address-only treatment as above.
     verify_canonical_ata(
@@ -175,6 +202,7 @@ pub fn process_settle_dvp(
         &dvp.mint_b,
         token_program_b_info,
     )?;
+    verify_ata_recipient_if_initialized(user_b_ata_b_info, &dvp.user_b, &dvp.mint_b)?;
 
     // Both legs must hold *at least* their target amount. Any balance
     // above the target is treated as an over-deposit by the leg's

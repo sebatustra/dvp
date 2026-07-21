@@ -7,10 +7,53 @@ use crate::{
         AMOUNT_B, INITIAL_BALANCE, REF_STRING,
     },
     utils::{
-        assert_instruction_error, assert_program_error, get_token_balance, TestContext,
-        MEMO_PROGRAM_ID, SETTLEMENT_AUTHORITY_MISMATCH,
+        assert_instruction_error, assert_program_error, get_token_balance, set_token_balance,
+        TestContext, MEMO_PROGRAM_ID, RECIPIENT_ATA_MISMATCH, SETTLEMENT_AUTHORITY_MISMATCH,
     },
 };
+
+/// The shared refund path authenticates the refund ATA, not just its
+/// address: a funded leg whose depositor ATA was owner-reassigned to an
+/// attacker (legacy SPL `SetAuthority`) must revert instead of refunding
+/// the attacker. Funds stay in escrow, recoverable once the owner is
+/// restored.
+#[test]
+fn test_cancel_dvp_rejects_owner_reassigned_refund_ata() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    let attacker = Keypair::new().pubkey();
+    set_token_balance(
+        &mut context,
+        &fixture.user_a_ata_a,
+        &fixture.mint_a,
+        &attacker,
+        0,
+        &fixture.token_program_a,
+    );
+
+    let result = context.send(
+        CancelDvpBuilder::new()
+            .settlement_authority(fixture.settlement_authority.pubkey())
+            .swap_dvp(fixture.swap_dvp)
+            .mint_a(fixture.mint_a)
+            .mint_b(fixture.mint_b)
+            .dvp_ata_a(fixture.dvp_ata_a)
+            .dvp_ata_b(fixture.dvp_ata_b)
+            .user_a_ata_a(fixture.user_a_ata_a)
+            .user_b_ata_b(fixture.user_b_ata_b)
+            .token_program_a(fixture.token_program_a)
+            .token_program_b(fixture.token_program_b)
+            .memo_program(MEMO_PROGRAM_ID)
+            .leg_a_extras_count(0)
+            .instruction(),
+        &[&fixture.settlement_authority],
+    );
+    assert_program_error(result, RECIPIENT_ATA_MISMATCH);
+}
 
 #[test]
 fn test_cancel_dvp_success() {

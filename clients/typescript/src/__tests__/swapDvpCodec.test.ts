@@ -129,4 +129,17 @@ describe("SwapDvp account codec", () => {
       earliestSettlementTimestamp: { __option: "Some", value: 1_770_000_000n },
     });
   });
+
+  // 64-bit fields are exact identity: a JS number above 2^53 rounds
+  // before encoding. The encoder must reject number, not round it.
+  it("rejects a plain number for a 64-bit field instead of rounding it", () => {
+    const encoder = getSwapDvpEncoder();
+    expect(() =>
+      encoder.encode({
+        ...baseArgs,
+        amountA: (2 ** 53 + 1) as unknown as bigint,
+        earliestSettlementTimestamp: null,
+      }),
+    ).toThrow(/bigint/i);
+  });
 });

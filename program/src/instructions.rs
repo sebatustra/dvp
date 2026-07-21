@@ -57,6 +57,14 @@ pub enum DvpSwapProgramInstruction {
         name = "settlement_authority",
         docs = "Third-party authority allowed to settle/cancel; must not be executable so it can receive closed-account rent"
     ))]
+    #[codama(account(
+        name = "user_a",
+        docs = "Seller (delivers mint_a). Must be a system-owned, non-executable account so it can authorize Reject/Reclaim/Recover"
+    ))]
+    #[codama(account(
+        name = "user_b",
+        docs = "Buyer (delivers mint_b). Same signer-capability requirement as user_a"
+    ))]
     #[codama(account(name = "mint_a", docs = "Mint of the asset leg (seller delivers)"))]
     #[codama(account(name = "mint_b", docs = "Mint of the cash leg (buyer delivers)"))]
     #[codama(account(
@@ -83,10 +91,6 @@ pub enum DvpSwapProgramInstruction {
         docs = "Associated Token Account program"
     ))]
     CreateDvp {
-        /// Seller; delivers `amount_a` of `mint_a`.
-        user_a: Pubkey,
-        /// Buyer; delivers `amount_b` of `mint_b`.
-        user_b: Pubkey,
         /// Asset leg size.
         amount_a: u64,
         /// Cash leg size.
@@ -371,7 +375,7 @@ pub enum DvpSwapProgramInstruction {
     ))]
     #[codama(account(
         name = "token_program",
-        docs = "SPL Token or Token-2022 program; must own mint"
+        docs = "SPL Token or Token-2022 program; must own dvp_escrow_ata (the program the escrow was created under, regardless of the mint's current owner)"
     ))]
     #[codama(account(
         name = "memo_program",

@@ -1,4 +1,5 @@
 use dvp_swap_program_client::{accounts::SwapDvp, instructions::CreateDvpBuilder};
+use litesvm::types::TransactionMetadata;
 use solana_sdk::signature::{Keypair, Signer};
 use spl_associated_token_account::instruction::create_associated_token_account;
 
@@ -8,10 +9,10 @@ use crate::{
     },
     utils::{
         assert_program_error, dvp_ata, get_token_balance, nonce_tombstone_pda, set_mint,
-        set_native_mint, swap_dvp_pda, TestContext, EARLIEST_AFTER_EXPIRY,
+        set_native_mint, set_token_multisig, swap_dvp_pda, TestContext, EARLIEST_AFTER_EXPIRY,
         ESCROW_PRELOADED_WITH_LAMPORTS, EXPIRY_NOT_IN_FUTURE, EXPIRY_TOO_FAR_IN_FUTURE,
-        NATIVE_MINT, NONCE_ALREADY_USED, REF_STRING_TOO_LONG, SAME_MINT, SELF_DVP,
-        SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY,
+        NATIVE_MINT, NONCE_ALREADY_USED, PARTY_NOT_SIGNER_CAPABLE, REF_STRING_TOO_LONG, SAME_MINT,
+        SELF_DVP, SETTLEMENT_AUTHORITY_EXECUTABLE, SETTLEMENT_AUTHORITY_IS_PARTY,
         SETTLEMENT_DESTINATION_IS_SWAP_DVP, SWAP_DVP_PRELOADED_WITH_LAMPORTS, SWAP_PROGRAM_ID,
         TOKEN_PROGRAM_ID, ZERO_AMOUNT,
     },
@@ -699,6 +700,85 @@ fn test_create_dvp_accepts_max_len_ref_string() {
     let account = context.get_account(&fixture.swap_dvp).expect("SwapDvp");
     let dvp = SwapDvp::from_bytes(&account.data).expect("client must decode the account");
     assert_eq!(dvp.ref_string, max_ref.as_bytes());
+}
+
+/// Build and send CreateDvp with `user_a` set to `party_a`, deriving the
+/// PDA and escrows from it so the instruction is internally coherent.
+/// user_b, the settlement authority, and both mints are fresh.
+fn create_with_party_a(
+    context: &mut TestContext,
+    party_a: solana_sdk::pubkey::Pubkey,
+) -> Result<TransactionMetadata, String> {
+    let user_b = Keypair::new();
+    let settlement_authority = Keypair::new();
+    let mint_a = Keypair::new().pubkey();
+    let mint_b = Keypair::new().pubkey();
+    set_mint(context, &mint_a, &TOKEN_PROGRAM_ID);
+    set_mint(context, &mint_b, &TOKEN_PROGRAM_ID);
+    context.airdrop_if_required(&settlement_authority.pubkey(), 1_000_000_000);
+
+    let nonce = 0;
+    let (swap_dvp, _) = swap_dvp_pda(
+        &settlement_authority.pubkey(),
+        &party_a,
+        &user_b.pubkey(),
+        &mint_a,
+        &mint_b,
+        nonce,
+    );
+    let ix = CreateDvpBuilder::new()
+        .payer(context.payer.pubkey())
+        .swap_dvp(swap_dvp)
+        .nonce_tombstone(nonce_tombstone_pda(&swap_dvp).0)
+        .mint_a(mint_a)
+        .mint_b(mint_b)
+        .dvp_ata_a(dvp_ata(&swap_dvp, &mint_a, &TOKEN_PROGRAM_ID))
+        .dvp_ata_b(dvp_ata(&swap_dvp, &mint_b, &TOKEN_PROGRAM_ID))
+        .token_program_a(TOKEN_PROGRAM_ID)
+        .token_program_b(TOKEN_PROGRAM_ID)
+        .user_a(party_a)
+        .user_b(user_b.pubkey())
+        .settlement_authority(settlement_authority.pubkey())
+        .amount_a(AMOUNT_A)
+        .amount_b(AMOUNT_B)
+        .expiry_timestamp(context.now() + 3600)
+        .nonce(nonce)
+        .ref_string(REF_STRING.to_string())
+        .instruction();
+    context.send(ix, &[])
+}
+
+/// An SPL Token multisig can control a funding account but can never sign
+/// a transaction, so its late deposits could never be recovered. Reject
+/// it as a party at creation.
+#[test]
+fn test_create_dvp_rejects_token_multisig_party() {
+    let mut context = TestContext::new();
+    let multisig = Keypair::new().pubkey();
+    set_token_multisig(&mut context, &multisig, &TOKEN_PROGRAM_ID);
+
+    let result = create_with_party_a(&mut context, multisig);
+    assert_program_error(result, PARTY_NOT_SIGNER_CAPABLE);
+}
+
+/// An executable account can never sign, so it is not a valid party.
+#[test]
+fn test_create_dvp_rejects_executable_party() {
+    let mut context = TestContext::new();
+    let result = create_with_party_a(&mut context, SWAP_PROGRAM_ID);
+    assert_program_error(result, PARTY_NOT_SIGNER_CAPABLE);
+}
+
+/// A mint (owned by a token program) is not a wallet identity and can
+/// never sign, so it is rejected as a party.
+#[test]
+fn test_create_dvp_rejects_mint_party() {
+    let mut context = TestContext::new();
+    let mint_party = Keypair::new().pubkey();
+    set_mint(&mut context, &mint_party, &TOKEN_PROGRAM_ID);
+
+    let result = create_with_party_a(&mut context, mint_party);
+    assert_program_error(result, PARTY_NOT_SIGNER_CAPABLE);
 }
 
 #[test]

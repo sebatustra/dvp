@@ -5,6 +5,7 @@ members = [
     "clients/rust",
     "tests/integration-tests",
     "tests/transfer-hook-fixture",
+    "tests/smart-wallet-fixture",
 ]
 
 resolver = "2"

@@ -10,8 +10,9 @@ use crate::{
     },
     utils::{
         assert_instruction_error, assert_program_error, create_ata, dvp_ata, fund_wallet_ata,
-        get_token_balance, nonce_tombstone_pda, swap_dvp_pda, TestContext, DVP_EXPIRED,
-        LEG_NOT_FUNDED, MEMO_PROGRAM_ID, SETTLEMENT_AUTHORITY_MISMATCH, SETTLEMENT_TOO_EARLY,
+        get_token_balance, nonce_tombstone_pda, set_token_balance, swap_dvp_pda, TestContext,
+        DVP_EXPIRED, LEG_NOT_FUNDED, MEMO_PROGRAM_ID, RECIPIENT_ATA_MISMATCH,
+        SETTLEMENT_AUTHORITY_MISMATCH, SETTLEMENT_TOO_EARLY,
     },
 };
 
@@ -698,6 +699,97 @@ fn test_settle_dvp_rejects_swapped_cross_atas() {
         .instruction();
     let result = context.send(ix, &[&fixture.settlement_authority]);
     assert_instruction_error(result, "InvalidSeeds");
+}
+
+/// A canonical delivery ATA whose token-account owner was reassigned to
+/// an attacker (legacy SPL `SetAuthority`, which leaves the ATA pubkey
+/// unchanged) must not be paid. Address canonicality alone doesn't prove
+/// the recipient still belongs to the expected wallet, so Settle checks
+/// the owner/mint fields and reverts.
+#[test]
+fn test_settle_dvp_rejects_owner_reassigned_delivery_ata() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    // user_a's canonical mint_b ATA (the cash-leg delivery destination)
+    // is reassigned to the attacker; its pubkey stays canonical.
+    let attacker = Keypair::new().pubkey();
+    set_token_balance(
+        &mut context,
+        &fixture.user_a_ata_b,
+        &fixture.mint_b,
+        &attacker,
+        0,
+        &fixture.token_program_b,
+    );
+
+    let result = context.send(
+        SettleDvpBuilder::new()
+            .settlement_authority(fixture.settlement_authority.pubkey())
+            .swap_dvp(fixture.swap_dvp)
+            .mint_a(fixture.mint_a)
+            .mint_b(fixture.mint_b)
+            .dvp_ata_a(fixture.dvp_ata_a)
+            .dvp_ata_b(fixture.dvp_ata_b)
+            .user_a_destination_ata_b(fixture.user_a_ata_b)
+            .user_b_destination_ata_a(fixture.user_b_ata_a)
+            .user_a_ata_a(fixture.user_a_ata_a)
+            .user_b_ata_b(fixture.user_b_ata_b)
+            .token_program_a(fixture.token_program_a)
+            .token_program_b(fixture.token_program_b)
+            .memo_program(MEMO_PROGRAM_ID)
+            .leg_a_extras_count(0)
+            .instruction(),
+        &[&fixture.settlement_authority],
+    );
+    assert_program_error(result, RECIPIENT_ATA_MISMATCH);
+}
+
+/// Same attack on a surplus-refund ATA: over-fund leg A so the surplus
+/// path fires, then reassign user_a's mint_a ATA to an attacker. The
+/// refund destination is only checked when it exists (it does here), so
+/// Settle reverts rather than sending the surplus to the attacker.
+#[test]
+fn test_settle_dvp_rejects_owner_reassigned_surplus_ata() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a_amount(&mut context, &fixture, AMOUNT_A + 1_000);
+    assert_fund_b(&mut context, &fixture);
+
+    let attacker = Keypair::new().pubkey();
+    set_token_balance(
+        &mut context,
+        &fixture.user_a_ata_a,
+        &fixture.mint_a,
+        &attacker,
+        0,
+        &fixture.token_program_a,
+    );
+
+    let result = context.send(
+        SettleDvpBuilder::new()
+            .settlement_authority(fixture.settlement_authority.pubkey())
+            .swap_dvp(fixture.swap_dvp)
+            .mint_a(fixture.mint_a)
+            .mint_b(fixture.mint_b)
+            .dvp_ata_a(fixture.dvp_ata_a)
+            .dvp_ata_b(fixture.dvp_ata_b)
+            .user_a_destination_ata_b(fixture.user_a_ata_b)
+            .user_b_destination_ata_a(fixture.user_b_ata_a)
+            .user_a_ata_a(fixture.user_a_ata_a)
+            .user_b_ata_b(fixture.user_b_ata_b)
+            .token_program_a(fixture.token_program_a)
+            .token_program_b(fixture.token_program_b)
+            .memo_program(MEMO_PROGRAM_ID)
+            .leg_a_extras_count(0)
+            .instruction(),
+        &[&fixture.settlement_authority],
+    );
+    assert_program_error(result, RECIPIENT_ATA_MISMATCH);
 }
 
 /// Two DvPs between the same parties + mints, disambiguated only by

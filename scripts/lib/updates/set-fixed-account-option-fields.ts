@@ -19,6 +19,7 @@ import {
  * Rust client's strict decoding lives in the handwritten `verify` module.
  */
 export function setFixedAccountOptionFields(dvpSwapCodama: Codama): Codama {
+  let matched = 0;
   dvpSwapCodama.update(
     bottomUpTransformerVisitor([
       {
@@ -27,6 +28,7 @@ export function setFixedAccountOptionFields(dvpSwapCodama: Codama): Codama {
         transform: (node) => {
           assertIsNode(node, "structFieldTypeNode");
           assertIsNode(node.type, "optionTypeNode");
+          matched += 1;
           return structFieldTypeNode({
             ...node,
             type: optionTypeNode(node.type.item, {
@@ -38,5 +40,16 @@ export function setFixedAccountOptionFields(dvpSwapCodama: Codama): Codama {
       },
     ]),
   );
+  // Fail codegen if the selector stopped matching (e.g. a Codama or IDL
+  // rename). A silent no-op would ship a SwapDvp codec that falls back to
+  // variable-width Option and accepts the 386-byte forged layout the
+  // on-chain program rejects.
+  if (matched !== 1) {
+    throw new Error(
+      `setFixedAccountOptionFields: expected to patch exactly 1 SwapDvp ` +
+        `option field, patched ${matched}. The generated codec would accept ` +
+        `the forged short layout; refusing to render.`,
+    );
+  }
   return dvpSwapCodama;
 }

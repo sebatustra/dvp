@@ -14,6 +14,8 @@
 //!   blocked-extension layout *after* CreateDvp, and Settle/Reject must
 //!   still drain funds (the unwind paths intentionally skip the
 //!   extension check so funds can never get stranded).
+//! - **Post-Create cross-program recreation**: a mint is recreated under
+//!   the other token program after CreateDvp; Settle must reject it.
 
 use dvp_swap_program_client::instructions::{
     CancelDvpBuilder, CreateDvpBuilder, ReclaimDvpBuilder, RecoverDvpBuilder, RejectDvpBuilder,
@@ -29,13 +31,14 @@ use crate::{
     },
     utils::{
         assert_instruction_error, assert_program_error, get_token_balance, hook_extras_for_mint,
-        malicious_hook_extras, set_mint_2022_with_confidential_transfer,
+        malicious_hook_extras, set_mint, set_mint_2022_with_confidential_transfer,
         set_mint_2022_with_interest_bearing, set_mint_2022_with_non_transferable,
         set_mint_2022_with_pausable, set_mint_2022_with_permanent_delegate,
         set_mint_2022_with_scaled_ui_amount, set_mint_2022_with_transfer_fee,
         set_mint_2022_with_transfer_hook, set_token_2022_with_hook_account,
-        set_token_2022_with_memo_required, setup_hook_mint, setup_malicious_hook_mint, TestContext,
-        BLOCKED_MINT_EXTENSION, MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+        set_token_2022_with_memo_required, set_token_balance, setup_hook_mint,
+        setup_malicious_hook_mint, TestContext, BLOCKED_MINT_EXTENSION, MEMO_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
     },
 };
 
@@ -378,8 +381,12 @@ fn test_create_rejects_mint_program_owner_mismatch_b() {
 
 // ---------------------------------------------------------------------
 // Extension validation runs at Create AND Settle. The recovery
-// paths (Cancel/Reject/Reclaim/Recover) stay tolerant so a post-Create
-// mint mutation can never strand funds. The tests below pin both halves:
+// paths (Cancel/Reject/Reclaim/Recover) skip it so the program never
+// blocks recovery after a post-Create mint mutation. That is not a
+// promise of full recovery: they still issue a real TransferChecked, so
+// a mint recreated as NonTransferable or fee-bearing is unmovable or
+// taxed by the token program itself (a trusted-authority risk, not one
+// the program can override). The tests below pin both halves:
 // Settle re-validates and rejects a leg that gained a blocked extension
 // after Create (then the honest party recovers via Reject), while Reject
 // itself does no extension check.
@@ -445,6 +452,72 @@ fn test_settle_rejects_post_create_blocked_extension() {
         get_token_balance(&context, &fixture.user_a_ata_a),
         INITIAL_BALANCE
     );
+    assert_eq!(
+        get_token_balance(&context, &fixture.user_b_ata_b),
+        INITIAL_BALANCE
+    );
+    assert!(context.get_account(&fixture.swap_dvp).is_none());
+}
+
+/// Cross-program close-and-recreate: a zero-supply T22 mint is closed
+/// and recreated at the same address as a legacy SPL mint, and
+/// counterfeit tokens are minted into the existing T22 escrow. Settle
+/// rebinds each mint to the token program captured at Create, rejecting
+/// the swapped leg. Reject skips the rebind so the honest party can
+/// still unwind.
+#[test]
+fn test_settle_rejects_mint_recreated_under_other_token_program() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+
+    assert_create_dvp(&mut context, &fixture);
+    // Only the honest counterparty funds; leg A stays empty until the
+    // counterfeit below.
+    assert_fund_b(&mut context, &fixture);
+
+    // Recreate mint_a under legacy SPL Token and mint the leg amount
+    // straight into the existing Token-2022 escrow. The escrow stays
+    // T22-owned: a legacy MintTo bumps its amount without requiring the
+    // destination to be owned by legacy SPL.
+    set_mint(&mut context, &fixture.mint_a, &TOKEN_PROGRAM_ID);
+    set_token_balance(
+        &mut context,
+        &fixture.dvp_ata_a,
+        &fixture.mint_a,
+        &fixture.swap_dvp,
+        AMOUNT_A,
+        &TOKEN_2022_PROGRAM_ID,
+    );
+
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_instruction_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        "InvalidAccountOwner",
+    );
+
+    // The honest party's funds are not stranded: Reject drains both
+    // escrows and closes the DvP.
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_b);
     assert_eq!(
         get_token_balance(&context, &fixture.user_b_ata_b),
         INITIAL_BALANCE

@@ -60,6 +60,98 @@ pub fn verify_canonical_ata(
     Ok(())
 }
 
+/// Recipient state relative to an expected (wallet, mint) pair, read
+/// from the token account's own fields.
+enum RecipientState {
+    /// The account was never created (owned by neither token program) or
+    /// is present but not initialized. No transfer can target it.
+    Uninitialized,
+    /// Initialized and still bound to the expected wallet and mint.
+    Matches,
+    /// Initialized but its owner or mint field no longer matches.
+    Mismatch,
+}
+
+/// Classify a recipient ATA by reading its token-account owner and mint,
+/// dispatching on the owning token program. `verify_canonical_ata`
+/// proves only the address; this reads the account contents so a
+/// reassigned owner (legacy SPL `SetAuthority`, which leaves the ATA
+/// pubkey unchanged) is caught. Applied to Token-2022 too, where the
+/// ATA program's `ImmutableOwner` already blocks reassignment: the check
+/// is moot there but keeps canonicality from implying the extension is
+/// present rather than trusting the ATA program to have set it.
+#[inline(always)]
+fn classify_recipient(
+    ata_info: &AccountView,
+    wallet: &Address,
+    mint: &Address,
+) -> Result<RecipientState, ProgramError> {
+    let (owner_ok, mint_ok, initialized) = if ata_info.owned_by(&TOKEN_PROGRAM_ID) {
+        let data = ata_info.try_borrow()?;
+        let account = unsafe { TokenAccount::from_bytes_unchecked(&data) };
+        (
+            account.owner() == wallet,
+            account.mint() == mint,
+            account.is_initialized(),
+        )
+    } else if ata_info.owned_by(&TOKEN_2022_PROGRAM_ID) {
+        let data = ata_info.try_borrow()?;
+        let account = unsafe { Token2022Account::from_bytes_unchecked(&data) };
+        (
+            account.owner() == wallet,
+            account.mint() == mint,
+            account.is_initialized(),
+        )
+    } else {
+        return Ok(RecipientState::Uninitialized);
+    };
+    if !initialized {
+        return Ok(RecipientState::Uninitialized);
+    }
+    if owner_ok && mint_ok {
+        Ok(RecipientState::Matches)
+    } else {
+        Ok(RecipientState::Mismatch)
+    }
+}
+
+/// Recipient ATA that always receives a transfer (the Settle delivery
+/// legs). Requires the account initialized and still bound to the
+/// expected wallet and mint. Address canonicality alone is not enough:
+/// a legacy SPL Token account can be reassigned to another owner via
+/// `SetAuthority` without changing its ATA pubkey, so a delivery could
+/// otherwise credit an attacker-controlled account.
+#[inline(always)]
+pub fn verify_ata_recipient(
+    ata_info: &AccountView,
+    wallet: &Address,
+    mint: &Address,
+) -> ProgramResult {
+    match classify_recipient(ata_info, wallet, mint)? {
+        RecipientState::Matches => Ok(()),
+        _ => Err(DvpSwapProgramError::RecipientAtaMismatch.into()),
+    }
+}
+
+/// Recipient ATA that only receives a transfer when it holds a balance
+/// to move (surplus refunds at Settle, leg refunds at Cancel/Reject).
+/// Tolerates an uninitialized account, since no transfer targets it and
+/// an unfunded leg's ATA is legitimately absent, but if the account
+/// exists it must still be bound to the expected wallet and mint. A
+/// reassigned account therefore reverts instead of paying an attacker,
+/// leaving the funds in escrow to recover once the owner is restored.
+#[inline(always)]
+pub fn verify_ata_recipient_if_initialized(
+    ata_info: &AccountView,
+    wallet: &Address,
+    mint: &Address,
+) -> ProgramResult {
+    match classify_recipient(ata_info, wallet, mint)? {
+        RecipientState::Mismatch => Err(DvpSwapProgramError::RecipientAtaMismatch.into()),
+        RecipientState::Matches | RecipientState::Uninitialized => Ok(()),
+    }
+}
+
 /// Require that a non-native escrow holds exactly its rent-exempt
 /// minimum and no more. For a non-WSOL leg the token balance lives in
 /// the account's data, so any lamports beyond rent are raw SOL that
@@ -192,7 +284,9 @@ pub fn get_mint_decimals(mint_info: &AccountView) -> Result<u8, ProgramError> {
 /// zero-supply mint and recreate it at the same address with a
 /// different extension set. Settle re-runs this check so a leg recreated
 /// with a deny-listed extension (e.g. a transfer fee) can't reach a
-/// short "successful" settlement; the recovery paths stay tolerant so
+/// short "successful" settlement, and additionally rebinds each mint to
+/// its stored token program so a recreation under the other token
+/// program can't settle either; the recovery paths stay tolerant so
 /// funds are never stranded. Traders are still expected to vet the mints
 /// they agree to transact in; mint-authority trust is not a problem the
 /// program can solve.
