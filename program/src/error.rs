@@ -125,6 +125,11 @@ pub enum DvpSwapProgramError {
     /// unrecoverable; CreateDvp rejects it up front.
     #[error("user_a and user_b must be system-owned, non-executable accounts")]
     PartyNotSignerCapable,
+
+    /// (23) A leg's mint authority differs from the value captured at
+    /// CreateDvp. Checked only at SettleDvp.
+    #[error("mint authority changed since DvP creation")]
+    MintAuthorityChanged,
 }
 
 impl From<DvpSwapProgramError> for ProgramError {

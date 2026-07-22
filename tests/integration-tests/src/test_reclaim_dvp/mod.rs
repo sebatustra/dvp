@@ -8,9 +8,43 @@ use crate::{
         setup_dvp, AMOUNT_A, AMOUNT_B, INITIAL_BALANCE,
     },
     utils::{
-        assert_program_error, get_token_balance, TestContext, MEMO_PROGRAM_ID, SIGNER_NOT_PARTY,
+        assert_program_error, get_token_balance, set_token_balance, TestContext, MEMO_PROGRAM_ID,
+        RECIPIENT_ATA_MISMATCH, SIGNER_NOT_PARTY,
     },
 };
+
+/// Reclaim drains to the signer's own ATA, authenticated by its contents
+/// not just its address. A canonical ATA owner-reassigned via legacy SPL
+/// SetAuthority must revert, leaving funds in escrow to recover once the
+/// owner is restored.
+#[test]
+fn test_reclaim_dvp_rejects_owner_reassigned_dest_ata() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+
+    let attacker = Keypair::new().pubkey();
+    set_token_balance(
+        &mut context,
+        &fixture.user_a_ata_a,
+        &fixture.mint_a,
+        &attacker,
+        0,
+        &fixture.token_program_a,
+    );
+
+    let ix = ReclaimDvpBuilder::new()
+        .signer(fixture.user_a.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint(fixture.mint_a)
+        .dvp_source_ata(fixture.dvp_ata_a)
+        .signer_dest_ata(fixture.user_a_ata_a)
+        .token_program(fixture.token_program_a)
+        .memo_program(MEMO_PROGRAM_ID)
+        .instruction();
+    assert_program_error(context.send(ix, &[&fixture.user_a]), RECIPIENT_ATA_MISMATCH);
+}
 
 #[test]
 fn test_reclaim_dvp_success() {

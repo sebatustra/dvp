@@ -22,7 +22,7 @@ use crate::utils::{dvp_ata, swap_dvp_pda, TestContext};
 const SYSTEM_PROGRAM_ID: Pubkey = Pubkey::new_from_array([0u8; 32]);
 
 /// Attacker-chosen SwapDvp-looking terms, Borsh-serialized. With
-/// `earliest_settlement_timestamp = None` this is the 386-byte layout, 8
+/// `earliest_settlement_timestamp = None` this is the 450-byte layout, 8
 /// bytes shorter than `SwapDvp::LEN` because Borsh drops the None payload.
 fn forged_swap_dvp_data(attacker: &Pubkey) -> Vec<u8> {
     let forged = SwapDvp {
@@ -41,11 +41,13 @@ fn forged_swap_dvp_data(attacker: &Pubkey) -> Vec<u8> {
         ref_string: [0u8; 64],
         user_a_settlement_destination: attacker.to_bytes().into(),
         user_b_settlement_destination: attacker.to_bytes().into(),
+        mint_a_authority: Pubkey::new_unique().to_bytes().into(),
+        mint_b_authority: Pubkey::new_unique().to_bytes().into(),
         earliest_settlement_timestamp: None,
     };
     let mut data = Vec::new();
     forged.serialize(&mut data).unwrap();
-    assert_eq!(data.len(), 386, "Borsh None layout is the short variant");
+    assert_eq!(data.len(), 450, "Borsh None layout is the short variant");
     data
 }
 
@@ -87,14 +89,16 @@ fn checked_decode_rejects_system_owned_forgery() {
 }
 
 /// Even a forgery placed in a program-owned-looking account fails the
-/// strict size check: the on-chain layout is always 394 bytes.
+/// strict size check: the on-chain layout is always `SWAP_DVP_ACCOUNT_LEN`
+/// bytes.
 #[test]
 fn strict_try_from_bytes_rejects_short_layout() {
     let attacker = Pubkey::new_unique();
     let data = forged_swap_dvp_data(&attacker);
     assert!(SwapDvp::try_from_bytes(&data).is_err());
 
-    // Padding to 394 with the on-chain None sentinel parses fine.
+    // Appending the trailing `earliest` sentinel (it is the last field)
+    // reconstructs the full fixed on-chain layout, which parses fine.
     let mut padded = data;
     padded.extend_from_slice(&i64::MAX.to_le_bytes());
     assert_eq!(padded.len(), SWAP_DVP_ACCOUNT_LEN);

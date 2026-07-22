@@ -44,6 +44,8 @@ const validData = () =>
       refString: Array.from(new Uint8Array(64)),
       userASettlementDestination: addressOf(1),
       userBSettlementDestination: addressOf(2),
+      mintAAuthority: addressOf(3),
+      mintBAuthority: addressOf(4),
       earliestSettlementTimestamp: null,
     }),
   );
@@ -82,8 +84,8 @@ describe("decodeSwapDvpChecked", () => {
 
   it("rejects a wrong-size account", () => {
     expect(() =>
-      decodeSwapDvpChecked(encodedAccount({ data: validData().slice(0, 386) })),
-    ).toThrow(/394|size|length/i);
+      decodeSwapDvpChecked(encodedAccount({ data: validData().slice(0, 450) })),
+    ).toThrow(/458|size|length/i);
   });
 
   it("rejects a missing account", () => {
@@ -93,7 +95,7 @@ describe("decodeSwapDvpChecked", () => {
   });
 
   it("exposes the on-chain account size", () => {
-    expect(SWAP_DVP_ACCOUNT_SIZE).toBe(394);
+    expect(SWAP_DVP_ACCOUNT_SIZE).toBe(458);
   });
 });
 

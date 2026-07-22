@@ -58,8 +58,16 @@ pub struct SwapDvp {
     /// Wallet receiving user_b's settlement proceeds — the asset leg
     /// (`mint_a`). Defaults to `user_b`; same rules as above.
     pub user_b_settlement_destination: Pubkey,
+    /// `mint_a`'s mint authority captured at Create, or the default (all
+    /// zero) pubkey when the mint has none. Settle rejects if it no longer
+    /// matches, so a leg can't gain a fresh authority post-consent.
+    pub mint_a_authority: Pubkey,
+    /// `mint_b`'s mint authority captured at Create. Same rule as above.
+    pub mint_b_authority: Pubkey,
     /// `None` = settlement allowed any time before `expiry_timestamp`.
-    /// `Some(t)` = additionally requires `now >= t`.
+    /// `Some(t)` = additionally requires `now >= t`. Kept last: it is the
+    /// only variable-width Borsh option, so its fixed on-chain sentinel is
+    /// trailing and the generated client decoder can ignore it.
     pub earliest_settlement_timestamp: Option<i64>,
 }
 
@@ -69,6 +77,7 @@ impl SwapDvp {
         + 8 * 4                // amount_a, amount_b, expiry_timestamp, nonce
         + MAX_REF_STRING_LEN   // ref_string (zero-padded)
         + 32 * 2               // user_a_settlement_destination, user_b_settlement_destination
+        + 32 * 2               // mint_a_authority, mint_b_authority
         + 1 + 8; // earliest_settlement_timestamp (opt)
 
     /// Owned `(nonce, bump)` byte buffers. Bind to a local so
@@ -112,6 +121,8 @@ impl SwapDvp {
         data.extend_from_slice(&self.ref_string);
         data.extend_from_slice(self.user_a_settlement_destination.as_ref());
         data.extend_from_slice(self.user_b_settlement_destination.as_ref());
+        data.extend_from_slice(self.mint_a_authority.as_ref());
+        data.extend_from_slice(self.mint_b_authority.as_ref());
 
         match self.earliest_settlement_timestamp {
             Some(timestamp) => {
@@ -233,6 +244,20 @@ impl SwapDvp {
         );
         offset += 32;
 
+        let mint_a_authority = Pubkey::new_from_array(
+            data[offset..offset + 32]
+                .try_into()
+                .map_err(|_| ProgramError::InvalidAccountData)?,
+        );
+        offset += 32;
+
+        let mint_b_authority = Pubkey::new_from_array(
+            data[offset..offset + 32]
+                .try_into()
+                .map_err(|_| ProgramError::InvalidAccountData)?,
+        );
+        offset += 32;
+
         // Tag is the source of truth; the payload after a `0` tag is a
         // sentinel (see `to_bytes`) and is intentionally not validated.
         let earliest_settlement_timestamp = match data[offset] {
@@ -261,6 +286,8 @@ impl SwapDvp {
             ref_string,
             user_a_settlement_destination,
             user_b_settlement_destination,
+            mint_a_authority,
+            mint_b_authority,
             earliest_settlement_timestamp,
         })
     }
@@ -292,14 +319,65 @@ mod tests {
             ref_string: [8u8; 64],
             user_a_settlement_destination: Pubkey::new_from_array([9u8; 32]),
             user_b_settlement_destination: Pubkey::new_from_array([10u8; 32]),
+            mint_a_authority: Pubkey::new_from_array([11u8; 32]),
+            mint_b_authority: Pubkey::new_from_array([12u8; 32]),
             earliest_settlement_timestamp: None,
         };
         let mut bytes = dvp.to_bytes();
         // Tag offset = bump(1) + 7*pubkey(224) + 4*u64-or-i64(32)
-        //   + ref_string(64) + 2*destination pubkey(64) = 385.
-        let option_tag_offset = 1 + 32 * 7 + 8 * 4 + MAX_REF_STRING_LEN + 32 * 2;
+        //   + ref_string(64) + 2*destination pubkey(64)
+        //   + 2*authority pubkey(64) = 449.
+        let option_tag_offset = 1 + 32 * 7 + 8 * 4 + MAX_REF_STRING_LEN + 32 * 2 + 32 * 2;
         bytes[option_tag_offset] = 2;
         let err = SwapDvp::try_from_bytes(&bytes).expect_err("must reject invalid tag");
         assert!(matches!(err, ProgramError::InvalidAccountData));
+    }
+
+    /// to_bytes -> try_from_bytes round-trips across the earliest-option
+    /// None/Some cases and present/absent (default) mint authorities, where
+    /// the layout could drift.
+    #[test]
+    fn test_to_bytes_try_from_bytes_roundtrip() {
+        let base = SwapDvp {
+            bump: 254,
+            user_a: Pubkey::new_from_array([1u8; 32]),
+            user_b: Pubkey::new_from_array([2u8; 32]),
+            mint_a: Pubkey::new_from_array([3u8; 32]),
+            mint_b: Pubkey::new_from_array([4u8; 32]),
+            settlement_authority: Pubkey::new_from_array([5u8; 32]),
+            token_program_a: Pubkey::new_from_array([6u8; 32]),
+            token_program_b: Pubkey::new_from_array([7u8; 32]),
+            amount_a: 1_000,
+            amount_b: 2_500,
+            expiry_timestamp: 1_780_000_000,
+            nonce: 42,
+            ref_string: [8u8; 64],
+            user_a_settlement_destination: Pubkey::new_from_array([9u8; 32]),
+            user_b_settlement_destination: Pubkey::new_from_array([10u8; 32]),
+            mint_a_authority: Pubkey::default(),
+            mint_b_authority: Pubkey::default(),
+            earliest_settlement_timestamp: None,
+        };
+
+        let key = Pubkey::new_from_array([11u8; 32]);
+        let default = Pubkey::default();
+        let cases = [
+            (None, default, default),
+            (Some(1_780_000_000), key, default),
+            (None, default, key),
+            (Some(1_780_000_000), key, key),
+        ];
+
+        for (earliest, auth_a, auth_b) in cases {
+            let dvp = SwapDvp {
+                earliest_settlement_timestamp: earliest,
+                mint_a_authority: auth_a,
+                mint_b_authority: auth_b,
+                ..base.clone()
+            };
+            let bytes = dvp.to_bytes();
+            assert_eq!(bytes.len(), SwapDvp::LEN);
+            assert_eq!(SwapDvp::try_from_bytes(&bytes).unwrap(), dvp);
+        }
     }
 }

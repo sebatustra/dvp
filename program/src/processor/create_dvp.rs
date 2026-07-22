@@ -8,7 +8,8 @@ use crate::{
     },
     processor::shared::pda_utils::create_pda_account,
     processor::shared::token_utils::{
-        validate_mint_extensions, verify_canonical_ata, verify_escrow_not_preloaded,
+        get_mint_authority, validate_mint_extensions, verify_canonical_ata,
+        verify_escrow_not_preloaded,
     },
     require, require_len,
     state::swap_dvp::{SwapDvp, MAX_REF_STRING_LEN, NONCE_TOMBSTONE_SEED, SWAP_DVP_SEED},
@@ -198,6 +199,8 @@ pub fn process_create_dvp(
         ref_string: args.ref_string,
         user_a_settlement_destination,
         user_b_settlement_destination,
+        mint_a_authority: get_mint_authority(mint_a_info)?.unwrap_or_default(),
+        mint_b_authority: get_mint_authority(mint_b_info)?.unwrap_or_default(),
         earliest_settlement_timestamp: args.earliest_settlement_timestamp,
     };
     let (nonce_bytes, bump_bytes) = dvp.seed_buffers();

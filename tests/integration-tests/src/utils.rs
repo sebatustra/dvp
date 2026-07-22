@@ -83,6 +83,7 @@ pub const SWAP_DVP_PRELOADED_WITH_LAMPORTS: u32 =
     DvpSwapProgramError::SwapDvpPreloadedWithLamports as u32;
 pub const RECIPIENT_ATA_MISMATCH: u32 = DvpSwapProgramError::RecipientAtaMismatch as u32;
 pub const PARTY_NOT_SIGNER_CAPABLE: u32 = DvpSwapProgramError::PartyNotSignerCapable as u32;
+pub const MINT_AUTHORITY_CHANGED: u32 = DvpSwapProgramError::MintAuthorityChanged as u32;
 
 const MIN_LAMPORTS: u64 = 500_000_000;
 
@@ -223,6 +224,41 @@ pub fn set_mint(context: &mut TestContext, mint: &Pubkey, token_program: &Pubkey
             is_initialized: true,
             freeze_authority: COption::None,
             mint_authority: COption::None,
+            supply: 1_000_000_000_000,
+        };
+        let mut data = vec![0u8; Token2022Mint::LEN];
+        Token2022Mint::pack_into_slice(&mint_state, &mut data);
+        write_account(context, mint, data, *token_program, 1_000_000_000);
+    } else {
+        panic!("unknown token program: {token_program}");
+    }
+}
+
+/// Like `set_mint`, but writes a chosen mint authority instead of `None`.
+pub fn set_mint_with_authority(
+    context: &mut TestContext,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    mint_authority: Option<Pubkey>,
+) {
+    let authority = mint_authority.map_or(COption::None, COption::Some);
+    if *token_program == TOKEN_PROGRAM_ID {
+        let mint_state = Mint {
+            decimals: 6,
+            is_initialized: true,
+            freeze_authority: COption::None,
+            mint_authority: authority,
+            supply: 1_000_000_000_000,
+        };
+        let mut data = vec![0u8; Mint::LEN];
+        Mint::pack(mint_state, &mut data).unwrap();
+        write_account(context, mint, data, *token_program, 1_000_000_000);
+    } else if *token_program == TOKEN_2022_PROGRAM_ID {
+        let mint_state = Token2022Mint {
+            decimals: 6,
+            is_initialized: true,
+            freeze_authority: COption::None,
+            mint_authority: authority,
             supply: 1_000_000_000_000,
         };
         let mut data = vec![0u8; Token2022Mint::LEN];

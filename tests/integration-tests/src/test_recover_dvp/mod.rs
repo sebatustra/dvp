@@ -16,9 +16,10 @@ use crate::{
         INITIAL_BALANCE, REF_STRING,
     },
     utils::{
-        assert_instruction_error, assert_program_error, get_token_balance, set_mint, TestContext,
-        DVP_NEVER_CREATED, DVP_STILL_OPEN, MEMO_PROGRAM_ID, NONCE_ALREADY_USED, SIGNER_NOT_PARTY,
-        TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+        assert_instruction_error, assert_program_error, get_token_balance, set_mint,
+        set_token_balance, TestContext, DVP_NEVER_CREATED, DVP_STILL_OPEN, MEMO_PROGRAM_ID,
+        NONCE_ALREADY_USED, RECIPIENT_ATA_MISMATCH, SIGNER_NOT_PARTY, TOKEN_2022_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
     },
 };
 
@@ -76,6 +77,41 @@ fn recreate_escrow(
         &leg_token_program(fixture, mint),
     );
     context.send(ix, &[payer]).expect("recreate escrow ATA");
+}
+
+/// Same as reclaim: Recover's drain to the signer's own ATA is
+/// authenticated by contents, so an owner-reassigned canonical ATA reverts
+/// instead of delivering the recovered deposit to the new owner.
+#[test]
+fn test_recover_dvp_rejects_owner_reassigned_dest_ata() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp(&mut context, 0);
+    assert_create_dvp(&mut context, &fixture);
+
+    // Close the trade, then a late deposit lands in a recreated escrow.
+    assert_reject_dvp(&mut context, &fixture, &fixture.user_a);
+    recreate_escrow(&mut context, &fixture.user_a, &fixture, &fixture.mint_a);
+    assert_fund_a(&mut context, &fixture);
+
+    // user_a's canonical dest ATA is owner-reassigned to an attacker.
+    let attacker = Keypair::new().pubkey();
+    set_token_balance(
+        &mut context,
+        &fixture.user_a_ata_a,
+        &fixture.mint_a,
+        &attacker,
+        0,
+        &fixture.token_program_a,
+    );
+
+    let ix = recover_ix(
+        &fixture,
+        &fixture.user_a.pubkey(),
+        &fixture.mint_a,
+        &fixture.dvp_ata_a,
+        &fixture.user_a_ata_a,
+    );
+    assert_program_error(context.send(ix, &[&fixture.user_a]), RECIPIENT_ATA_MISMATCH);
 }
 
 /// End-to-end funding-race reproduction. user_b front-runs user_a's

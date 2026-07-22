@@ -22,6 +22,7 @@ pub const SWAP_DVP_ACCOUNT_LEN: usize = 1  // bump
     + 8 * 4    // amount_a, amount_b, expiry_timestamp, nonce
     + 64       // ref_string
     + 32 * 2   // user_a_settlement_destination, user_b_settlement_destination
+    + 32 * 2   // mint_a_authority, mint_b_authority
     + 1 + 8; // earliest_settlement_timestamp (tag + payload)
 
 /// Seed prefix for the `SwapDvp` PDA (matches `SWAP_DVP_SEED` on-chain).
@@ -76,8 +77,8 @@ impl SwapDvp {
     /// The size gate is what makes reusing the generated Borsh decoder safe.
     /// The on-chain layout is fixed-width, but Borsh's `Option` is not (`None`
     /// is 1 byte, `Some` is 9), and `from_bytes` ignores trailing bytes, so on
-    /// its own it can't tell the real 394-byte account from the 386-byte
-    /// forgery. Pinned to 394 bytes, Borsh decodes `None` and `Some`
+    /// its own it can't tell the real 458-byte account from the 450-byte
+    /// forgery. Pinned to 458 bytes, Borsh decodes `None` and `Some`
     /// unambiguously and still rejects an invalid option tag.
     pub fn try_from_bytes(data: &[u8]) -> Result<Self, SwapDvpVerifyError> {
         if data.len() != SWAP_DVP_ACCOUNT_LEN {
@@ -199,6 +200,8 @@ mod tests {
             ref_string: [8u8; 64],
             user_a_settlement_destination: Pubkey::new_from_array([9u8; 32]),
             user_b_settlement_destination: Pubkey::new_from_array([10u8; 32]),
+            mint_a_authority: Pubkey::new_from_array([11u8; 32]),
+            mint_b_authority: Pubkey::new_from_array([12u8; 32]),
             earliest_settlement_timestamp: None,
         }
     }
@@ -226,6 +229,8 @@ mod tests {
         data.extend_from_slice(&dvp.ref_string);
         data.extend_from_slice(dvp.user_a_settlement_destination.as_ref());
         data.extend_from_slice(dvp.user_b_settlement_destination.as_ref());
+        data.extend_from_slice(dvp.mint_a_authority.as_ref());
+        data.extend_from_slice(dvp.mint_b_authority.as_ref());
         match dvp.earliest_settlement_timestamp {
             Some(t) => {
                 data.push(1);
@@ -257,11 +262,11 @@ mod tests {
     }
 
     #[test]
-    fn strict_try_from_bytes_rejects_386_byte_borsh_none() {
+    fn strict_try_from_bytes_rejects_borsh_none_forgery() {
         // The forgery: Borsh None is a lone `0` tag, 8 bytes short.
         let mut short = Vec::new();
         sample().serialize(&mut short).unwrap();
-        assert_eq!(short.len(), 386);
+        assert_eq!(short.len(), 450);
         assert!(matches!(
             SwapDvp::try_from_bytes(&short),
             Err(SwapDvpVerifyError::WrongSize { .. })

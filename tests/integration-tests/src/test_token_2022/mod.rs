@@ -21,7 +21,7 @@ use dvp_swap_program_client::instructions::{
     CancelDvpBuilder, CreateDvpBuilder, ReclaimDvpBuilder, RecoverDvpBuilder, RejectDvpBuilder,
     SettleDvpBuilder,
 };
-use solana_sdk::{account::Account, signature::Keypair, signature::Signer};
+use solana_sdk::{account::Account, pubkey::Pubkey, signature::Keypair, signature::Signer};
 
 use crate::{
     state_utils::{
@@ -35,10 +35,10 @@ use crate::{
         set_mint_2022_with_interest_bearing, set_mint_2022_with_non_transferable,
         set_mint_2022_with_pausable, set_mint_2022_with_permanent_delegate,
         set_mint_2022_with_scaled_ui_amount, set_mint_2022_with_transfer_fee,
-        set_mint_2022_with_transfer_hook, set_token_2022_with_hook_account,
-        set_token_2022_with_memo_required, set_token_balance, setup_hook_mint,
-        setup_malicious_hook_mint, TestContext, BLOCKED_MINT_EXTENSION, MEMO_PROGRAM_ID,
-        TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+        set_mint_2022_with_transfer_hook, set_mint_with_authority,
+        set_token_2022_with_hook_account, set_token_2022_with_memo_required, set_token_balance,
+        setup_hook_mint, setup_malicious_hook_mint, TestContext, BLOCKED_MINT_EXTENSION,
+        MEMO_PROGRAM_ID, MINT_AUTHORITY_CHANGED, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
     },
 };
 
@@ -523,6 +523,194 @@ fn test_settle_rejects_mint_recreated_under_other_token_program() {
         INITIAL_BALANCE
     );
     assert!(context.get_account(&fixture.swap_dvp).is_none());
+}
+
+/// A leg with no mint authority at Create can't be recreated with one and
+/// counterfeit-minted into the escrow: Settle pins the authority.
+#[test]
+fn test_settle_rejects_mint_authority_gained_after_create() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    let attacker = Pubkey::new_unique();
+    set_mint_with_authority(
+        &mut context,
+        &fixture.mint_a,
+        &TOKEN_2022_PROGRAM_ID,
+        Some(attacker),
+    );
+    set_token_balance(
+        &mut context,
+        &fixture.dvp_ata_a,
+        &fixture.mint_a,
+        &fixture.swap_dvp,
+        AMOUNT_A,
+        &TOKEN_2022_PROGRAM_ID,
+    );
+
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_program_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        MINT_AUTHORITY_CHANGED,
+    );
+}
+
+/// The pin stores the exact Create-time key, so swapping one authority for
+/// another (not only None -> Some) is rejected.
+#[test]
+fn test_settle_rejects_mint_authority_swapped_after_create() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+
+    let original = Pubkey::new_unique();
+    set_mint_with_authority(
+        &mut context,
+        &fixture.mint_a,
+        &TOKEN_2022_PROGRAM_ID,
+        Some(original),
+    );
+
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    let attacker = Pubkey::new_unique();
+    set_mint_with_authority(
+        &mut context,
+        &fixture.mint_a,
+        &TOKEN_2022_PROGRAM_ID,
+        Some(attacker),
+    );
+
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_program_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        MINT_AUTHORITY_CHANGED,
+    );
+}
+
+/// A mint keeping its Create-time authority is untouched by the pin.
+#[test]
+fn test_settle_succeeds_when_mint_authority_unchanged() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+
+    let live_authority = Pubkey::new_unique();
+    set_mint_with_authority(
+        &mut context,
+        &fixture.mint_a,
+        &TOKEN_2022_PROGRAM_ID,
+        Some(live_authority),
+    );
+
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+    assert_fund_b(&mut context, &fixture);
+
+    assert_settle_dvp(&mut context, &fixture);
+    assert_eq!(get_token_balance(&context, &fixture.user_b_ata_a), AMOUNT_A);
+    assert_eq!(get_token_balance(&context, &fixture.user_a_ata_b), AMOUNT_B);
+}
+
+/// The pin covers leg B too, not just leg A: mint_b gaining an authority
+/// after Create must reject at Settle.
+#[test]
+fn test_settle_rejects_mint_b_authority_gained_after_create() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+
+    let attacker = Pubkey::new_unique();
+    set_mint_with_authority(
+        &mut context,
+        &fixture.mint_b,
+        &TOKEN_2022_PROGRAM_ID,
+        Some(attacker),
+    );
+    set_token_balance(
+        &mut context,
+        &fixture.dvp_ata_b,
+        &fixture.mint_b,
+        &fixture.swap_dvp,
+        AMOUNT_B,
+        &TOKEN_2022_PROGRAM_ID,
+    );
+
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_program_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        MINT_AUTHORITY_CHANGED,
+    );
 }
 
 /// Same property on the Reject unwind path: post-Create, `mint_a` is
