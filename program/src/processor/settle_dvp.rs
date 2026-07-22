@@ -2,7 +2,7 @@ use crate::{
     error::DvpSwapProgramError,
     processor::shared::account_check::{verify_account_owner, verify_signer},
     processor::shared::token_utils::{
-        get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
+        get_mint_authority, get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
         validate_mint_extensions, verify_ata_recipient, verify_ata_recipient_if_initialized,
         verify_canonical_ata,
     },
@@ -127,6 +127,17 @@ pub fn process_settle_dvp(
     // reach a "successful" short settlement. Recovery paths stay tolerant.
     validate_mint_extensions(mint_a_info)?;
     validate_mint_extensions(mint_b_info)?;
+
+    // Pin each mint's authority to the value captured at Create. A mint
+    // recreated under the same program with a fresh authority passes the
+    // owner and extension rechecks above but could be minted into after
+    // consent; without this it would settle counterfeit. A mint with no
+    // authority is stored as the default pubkey, matched here the same way.
+    require!(
+        get_mint_authority(mint_a_info)?.unwrap_or_default() == dvp.mint_a_authority
+            && get_mint_authority(mint_b_info)?.unwrap_or_default() == dvp.mint_b_authority,
+        DvpSwapProgramError::MintAuthorityChanged
+    );
 
     let now = Clock::get()?.unix_timestamp;
     require!(now <= dvp.expiry_timestamp, DvpSwapProgramError::DvpExpired);

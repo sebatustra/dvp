@@ -251,6 +251,24 @@ pub fn get_mint_decimals(mint_info: &AccountView) -> Result<u8, ProgramError> {
     Err(ProgramError::InvalidAccountOwner)
 }
 
+/// Read the `mint_authority` of a mint owned by either legacy SPL Token
+/// or Token-2022. The field lives in the shared base layout, so this
+/// works regardless of any Token-2022 extensions appended after it.
+#[inline(always)]
+pub fn get_mint_authority(mint_info: &AccountView) -> Result<Option<Address>, ProgramError> {
+    if mint_info.owned_by(&TOKEN_PROGRAM_ID) {
+        let data = mint_info.try_borrow()?;
+        let mint = unsafe { TokenMint::from_bytes_unchecked(&data) };
+        return Ok(mint.mint_authority().copied());
+    }
+    if mint_info.owned_by(&TOKEN_2022_PROGRAM_ID) {
+        let data = mint_info.try_borrow()?;
+        let mint = unsafe { Token2022Mint::from_bytes_unchecked(&data) };
+        return Ok(mint.mint_authority().copied());
+    }
+    Err(ProgramError::InvalidAccountOwner)
+}
+
 /// Reject Token-2022 mints carrying either:
 /// - an amount-mutating extension that silently breaks the "escrow
 ///   balance == sum of deposits" invariant (`TransferFee`,

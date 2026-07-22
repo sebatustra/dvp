@@ -29,7 +29,7 @@ import { DVP_SWAP_PROGRAM_PROGRAM_ADDRESS } from "./generated/programs/dvpSwapPr
 import { getSafeU64Encoder } from "./safeNumberCodecs";
 
 /** Fixed on-chain size of a `SwapDvp` account (`SwapDvp::LEN`). */
-export const SWAP_DVP_ACCOUNT_SIZE = 394;
+export const SWAP_DVP_ACCOUNT_SIZE = 458;
 
 /** Seed prefix for the `SwapDvp` PDA (`SWAP_DVP_SEED`). */
 export const SWAP_DVP_SEED = "dvp";

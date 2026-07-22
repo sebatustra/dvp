@@ -1,6 +1,6 @@
 /**
  * Regression tests: the SwapDvp account codec must mirror the
- * fixed-width on-chain layout (SwapDvp::LEN == 394), where
+ * fixed-width on-chain layout (SwapDvp::LEN == 458), where
  * `earliestSettlementTimestamp` always occupies 1 tag byte + 8 payload
  * bytes (the payload after a `0` tag is an ignored sentinel).
  */
@@ -11,7 +11,7 @@ import {
   getSwapDvpEncoder,
 } from "../generated/accounts/swapDvp";
 
-export const SWAP_DVP_ACCOUNT_SIZE = 394;
+export const SWAP_DVP_ACCOUNT_SIZE = 458;
 
 const addressOf = (fill: number) =>
   getAddressDecoder().decode(new Uint8Array(32).fill(fill));
@@ -40,6 +40,8 @@ function onChainBytes(earliest?: bigint): Uint8Array {
   bytes.push(...new Uint8Array(64).fill(8)); // ref_string
   bytes.push(...new Uint8Array(32).fill(9)); // user_a_settlement_destination
   bytes.push(...new Uint8Array(32).fill(10)); // user_b_settlement_destination
+  bytes.push(...new Uint8Array(32).fill(11)); // mint_a_authority
+  bytes.push(...new Uint8Array(32).fill(12)); // mint_b_authority
   if (earliest === undefined) {
     bytes.push(0);
     bytes.push(...u64le(0x7fffffffffffffffn)); // i64::MAX sentinel
@@ -50,7 +52,7 @@ function onChainBytes(earliest?: bigint): Uint8Array {
   return new Uint8Array(bytes);
 }
 
-/** The 386-byte forgery: None as a lone `0` tag. */
+/** The 450-byte forgery: earliest None as a lone `0` tag, 8 bytes short. */
 function shortForgedBytes(): Uint8Array {
   const full = onChainBytes();
   return full.slice(0, full.length - 8);
@@ -74,12 +76,14 @@ const baseArgs = {
   refString: Array.from(new Uint8Array(64).fill(8)),
   userASettlementDestination: addressOf(9),
   userBSettlementDestination: addressOf(10),
+  mintAAuthority: addressOf(11),
+  mintBAuthority: addressOf(12),
 };
 
 describe("SwapDvp account codec", () => {
-  it("rejects the 386-byte short-None forgery", () => {
+  it("rejects the 450-byte short-None forgery", () => {
     const forged = shortForgedBytes();
-    expect(forged.length).toBe(386);
+    expect(forged.length).toBe(450);
     expect(() => decode(forged)).toThrow();
   });
 
