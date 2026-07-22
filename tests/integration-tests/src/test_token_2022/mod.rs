@@ -660,6 +660,59 @@ fn test_settle_succeeds_when_mint_authority_unchanged() {
     assert_eq!(get_token_balance(&context, &fixture.user_a_ata_b), AMOUNT_B);
 }
 
+/// The pin covers leg B too, not just leg A: mint_b gaining an authority
+/// after Create must reject at Settle.
+#[test]
+fn test_settle_rejects_mint_b_authority_gained_after_create() {
+    let mut context = TestContext::new();
+    let fixture = setup_dvp_with_programs(
+        &mut context,
+        0,
+        TOKEN_2022_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
+    );
+
+    assert_create_dvp(&mut context, &fixture);
+    assert_fund_a(&mut context, &fixture);
+
+    let attacker = Pubkey::new_unique();
+    set_mint_with_authority(
+        &mut context,
+        &fixture.mint_b,
+        &TOKEN_2022_PROGRAM_ID,
+        Some(attacker),
+    );
+    set_token_balance(
+        &mut context,
+        &fixture.dvp_ata_b,
+        &fixture.mint_b,
+        &fixture.swap_dvp,
+        AMOUNT_B,
+        &TOKEN_2022_PROGRAM_ID,
+    );
+
+    let settle_ix = SettleDvpBuilder::new()
+        .settlement_authority(fixture.settlement_authority.pubkey())
+        .swap_dvp(fixture.swap_dvp)
+        .mint_a(fixture.mint_a)
+        .mint_b(fixture.mint_b)
+        .dvp_ata_a(fixture.dvp_ata_a)
+        .dvp_ata_b(fixture.dvp_ata_b)
+        .user_a_destination_ata_b(fixture.user_a_ata_b)
+        .user_b_destination_ata_a(fixture.user_b_ata_a)
+        .user_a_ata_a(fixture.user_a_ata_a)
+        .user_b_ata_b(fixture.user_b_ata_b)
+        .token_program_a(fixture.token_program_a)
+        .token_program_b(fixture.token_program_b)
+        .memo_program(MEMO_PROGRAM_ID)
+        .leg_a_extras_count(0)
+        .instruction();
+    assert_program_error(
+        context.send(settle_ix, &[&fixture.settlement_authority]),
+        MINT_AUTHORITY_CHANGED,
+    );
+}
+
 /// Same property on the Reject unwind path: post-Create, `mint_a` is
 /// swapped to a Pausable T22 mint (allowed, but the point is that
 /// Reject does no extension check regardless). Reject must still drain

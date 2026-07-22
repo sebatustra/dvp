@@ -128,7 +128,7 @@ PDA seeds: `[b"dvp", settlement_authority, user_a, user_b, mint_a, mint_b, nonce
 | 18   | `EscrowPreloadedWithLamports`    | Create when a non-native escrow ATA holds lamports above its rent-exempt minimum                                                |
 | 19   | `SettlementDestinationIsSwapDvp` | Create with a settlement destination equal to the `swap_dvp` PDA                                                                |
 | 20   | `SwapDvpPreloadedWithLamports`   | Create when the `swap_dvp` account holds lamports above its rent reserve                                                        |
-| 21   | `RecipientAtaMismatch`           | Settle/Cancel/Reject/Reclaim/Recover when a recipient or refund ATA's `owner`/`mint` no longer matches the expected wallet/mint                 |
+| 21   | `RecipientAtaMismatch`           | Settle/Cancel/Reject/Reclaim/Recover when a recipient or refund ATA's `owner`/`mint` no longer matches the expected wallet/mint |
 | 22   | `PartyNotSignerCapable`          | Create with `user_a` or `user_b` that is not a system-owned, non-executable account                                             |
 | 23   | `MintAuthorityChanged`           | Settle when a leg's mint authority no longer matches the value captured at Create                                               |
 
