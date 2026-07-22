@@ -2,7 +2,8 @@ use crate::{
     error::DvpSwapProgramError,
     processor::shared::account_check::{verify_account_owner, verify_signer},
     processor::shared::token_utils::{
-        get_mint_decimals, get_token_account_balance, transfer_checked_cpi, verify_canonical_ata,
+        get_mint_decimals, get_token_account_balance, transfer_checked_cpi,
+        verify_ata_recipient_if_initialized, verify_canonical_ata,
     },
     require,
     state::swap_dvp::SwapDvp,
@@ -114,6 +115,10 @@ pub fn process_reclaim_dvp(
         leg_mint,
         token_program_info,
     )?;
+    // A canonical ATA can be owner-reassigned via legacy SPL SetAuthority
+    // without changing its pubkey; reject a reassigned account so the drain
+    // can't deliver to the new owner. Matches Cancel/Reject/Settle.
+    verify_ata_recipient_if_initialized(signer_dest_ata_info, signer_info.address(), leg_mint)?;
 
     // Drain whatever the escrow holds (matches Cancel/Reject). If empty,
     // skip the CPI: a no-op call is harmless and avoids an Insufficient-

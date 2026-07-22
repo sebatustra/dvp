@@ -134,7 +134,8 @@ pub fn verify_ata_recipient(
 }
 
 /// Recipient ATA that only receives a transfer when it holds a balance
-/// to move (surplus refunds at Settle, leg refunds at Cancel/Reject).
+/// to move (surplus refunds at Settle, leg refunds at Cancel/Reject, and
+/// the Reclaim/Recover drains).
 /// Tolerates an uninitialized account, since no transfer targets it and
 /// an unfunded leg's ATA is legitimately absent, but if the account
 /// exists it must still be bound to the expected wallet and mint. A
